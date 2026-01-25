@@ -78,3 +78,16 @@ Writes to `logs/daily-log-report-YYYYMMDD.txt` and emails summary.
 ## Data & Privacy
 - No secrets or user data in repo
 - `data/` and `logs/` are local only and ignored by git
+
+## Secrets & Rotation
+- Alle Tokens/Passwoerter regelmaessig rotieren (mind. alle 90 Tage).
+- Sofortige Rotation bei Verdacht auf Offenlegung.
+- Tokens nur lokal speichern (`.env`), niemals in Git.
+- GitHub PATs nur mit minimalen Rechten und kurzer Laufzeit verwenden.
+
+## Pre-Commit Secret Check
+Vor jedem Push einen lokalen Scan ausfuehren:
+```bash
+./scripts/secret-scan.sh
+```
+Der Scan blockiert keine Commits, gibt aber klare Hinweise bei Funden.
