@@ -1,0 +1,142 @@
+{
+  "interactionModel": {
+    "languageModel": {
+      "invocationName": "k i",
+      "intents": [
+        {
+          "name": "FreeReplyIntent",
+          "slots": [
+            { "name": "Any", "type": "AMAZON.SearchQuery" }
+          ],
+          "samples": [
+            "antwort {Any}",
+            "meine antwort ist {Any}",
+            "ich sage {Any}",
+            "ich meine {Any}",
+            "das ist {Any}"
+          ]
+        },
+        {
+          "name": "CrokChatIntent",
+          "slots": [
+            { "name": "Query", "type": "AMAZON.SearchQuery" },
+            { "name": "Followup", "type": "AMAZON.SearchQuery" }
+          ],
+          "samples": [
+            "sag {Query}",
+            "bitte sag {Query}",
+                    "erzaehl mir {Query}",
+                    "erzaehl {Query}",
+                    "erzaehle mir {Query}",
+                    "erzaehle {Query}",
+                    "erzähle mir {Query}",
+                    "erzähle {Query}",
+                    "erzähl mir {Query}",
+                    "erzähl {Query}",
+            "hilf mir mit {Query}",
+            "ich habe eine frage {Query}"
+          ]
+        },
+        {
+          "name": "ShortAnswerYesIntent",
+          "samples": [
+            "ja",
+            "jep",
+            "jo",
+            "klar",
+            "genau",
+            "stimmt",
+            "korrekt",
+            "richtig"
+          ]
+        },
+        {
+          "name": "ShortAnswerNoIntent",
+          "samples": [
+            "nein",
+            "nee",
+            "no",
+            "falsch",
+            "nicht",
+            "auf keinen fall"
+          ]
+        },
+        {
+          "name": "ShortAnswerOkayIntent",
+          "samples": [
+            "okay",
+            "ok",
+            "bitte",
+            "gerne",
+            "alles klar",
+            "in ordnung",
+            "passt"
+          ]
+        },
+        {
+          "name": "ShortAnswerFirstIntent",
+          "samples": [
+            "eins",
+            "erste",
+            "das erste",
+            "nummer eins"
+          ]
+        },
+        {
+          "name": "ShortAnswerSecondIntent",
+          "samples": [
+            "zwei",
+            "zweite",
+            "das zweite",
+            "nummer zwei"
+          ]
+        },
+        {
+          "name": "ShortAnswerThirdIntent",
+          "samples": [
+            "drei",
+            "dritte",
+            "das dritte",
+            "nummer drei"
+          ]
+        },
+        {
+          "name": "ShortAnswerLastIntent",
+          "samples": [
+            "das letzte",
+            "letzte",
+            "letztes"
+          ]
+        },
+        {
+          "name": "TriggerCrokActionIntent",
+          "slots": [
+            { "name": "Action", "type": "AMAZON.SearchQuery" }
+          ],
+          "samples": [
+            "fuehre {Action} aus",
+            "starte {Action}",
+            "aktion {Action}"
+          ]
+        },
+        {
+          "name": "AMAZON.CancelIntent",
+          "samples": []
+        },
+        {
+          "name": "AMAZON.StopIntent",
+          "samples": []
+        },
+        {
+          "name": "AMAZON.HelpIntent",
+          "samples": []
+        },
+        {
+          "name": "AMAZON.FallbackIntent",
+          "samples": []
+        }
+      ],
+      "types": []
+    }
+  }
+}

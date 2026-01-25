@@ -1,0 +1,15 @@
+{
+  "name": "alexa-crok-middleware",
+  "version": "0.1.0",
+  "description": "Middleware server for Alexa and Google Crok integration",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js"
+  },
+  "devDependencies": {
+    "@openai/codex": "^0.71.0"
+  },
+  "dependencies": {
+    "pg": "^8.11.5"
+  }
+}
