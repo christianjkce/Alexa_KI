@@ -1,12 +1,20 @@
 # Alexa_KI
 
 [![Repository](https://img.shields.io/badge/repo-private-lightgrey)](https://github.com/christianjkce/Alexa_KI)
+[![CI](https://github.com/christianjkce/Alexa_KI/actions/workflows/ci.yml/badge.svg)](https://github.com/christianjkce/Alexa_KI/actions/workflows/ci.yml)
 
 ## Quick Links
 - Playbook: `docs/Playbook.md`
 - Deployment: `docs/deploy.md`
 - Testing: `docs/testing.md`
 - Alexa Model: `skill-package/interactionModels/custom/de-DE.json`
+
+## Features
+- Alexa Skill Backend mit Account Linking
+- Web-App fuer Nutzerverwaltung und Admin-Panel
+- LLM Routing inkl. Live-Daten via Perplexity
+- Docker Setup (App, Postgres, Caddy)
+- Täglicher Log-Report mit Handlungsempfehlungen
 
 Backend und Web-App fuer den Alexa Skill "K.I.".
 
