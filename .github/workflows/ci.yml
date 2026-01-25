@@ -37,5 +37,8 @@ jobs:
       - name: Syntax check
         run: node -c src/server.js
 
+      - name: Secret scan
+        run: ./scripts/secret-scan.sh
+
       - name: Docker build
         run: docker build .
