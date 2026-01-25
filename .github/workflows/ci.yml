@@ -24,3 +24,18 @@ jobs:
 
       - name: Run tests
         run: npm test --if-present
+
+      - name: Lint (if present)
+        run: npm run lint --if-present
+
+      - name: Format check (if present)
+        run: npm run format --if-present
+
+      - name: Security audit
+        run: npm audit --omit=dev --audit-level=high
+
+      - name: Syntax check
+        run: node -c src/server.js
+
+      - name: Docker build
+        run: docker build .
