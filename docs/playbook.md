@@ -12,21 +12,21 @@ Ziel: Nach Reboot oder Unterbrechung den Alexa/Straico-Stack wieder aufnehmen.
 ### 1) Umgebung
 - Projektpfad: `/home/ubuntu`
 - Env-Datei: `.env` (bereits angelegt)
-  - `APP_HOST=ga.ce1doc.jkce.de`
-  - `APP_BASE_URL=https://ga.ce1doc.jkce.de`
+  - `APP_HOST=<host>`
+  - `APP_BASE_URL=<https-url>`
   - `PORT=3000`
-  - `ACME_EMAIL=christian.eichhorn@jkce.de`
+  - `ACME_EMAIL=<ops-email>`
   - `ADMIN_DEFAULT_USER=admin`
   - `ADMIN_PASS=<redacted>
-  - `SESSION_SECRET=6cP8tG8E2gRkzXBkj8RUqiMbX5Gsy4Gk7zSq9uKoqbU=`
-  - `JWT_SECRET=V0h2qPjUqEPnYmIbJ1YxwIb4nrl7bS8tYCQa3OKM2lc=`
-  - `ALEXA_CLIENT_ID=christian.eichhorn@jkce.de`
-  - `ALEXA_CLIENT_SECRET=20Nusslager17!`
-  - `ALEXA_REDIRECT_URI=https://ga.ce1doc.jkce.de/oauth/callback`
-  - `ALEXA_REDIRECT_URIS=https://ga.ce1doc.jkce.de/oauth/callback,https://pitangui.amazon.com/api/skill/link/M373RVOW91CUQO,https://layla.amazon.com/api/skill/link/M373RVOW91CUQO`
+  - `SESSION_SECRET=<set-secret>`
+  - `JWT_SECRET=<set-secret>`
+  - `ALEXA_CLIENT_ID=<from-console>`
+  - `ALEXA_CLIENT_SECRET=<from-console>`
+  - `ALEXA_REDIRECT_URI=<from-console>`
+  - `ALEXA_REDIRECT_URIS=<from-console,comma-separated>`
   - `CROK_REQUEST_TIMEOUT_MS=15000`
   - `CROK_CHAT_MODE=straico`
-  - `STRAICO_API_KEY=KD-UB40cs9G2pQLZ4G2uJFD2FcXr42TxsFiEOVoOf3OIyD2dVJX`
+  - `STRAICO_API_KEY=<set-secret>`
   - `STRAICO_API_BASE=https://api.straico.com`
   - `STRAICO_CHAT_PATH=/v2/chat/completions`
   - `STRAICO_CHAT_MODEL=openai/gpt-5.1`
@@ -47,7 +47,7 @@ Ziel: Nach Reboot oder Unterbrechung den Alexa/Straico-Stack wieder aufnehmen.
   - `TOKEN_STORE_PATH=./data/token-store.json`
   - `CONVERSATION_STORE_PATH=./data/conversation-store.json`
   - `DISABLE_ALEXA_SIGNATURE_VALIDATION=0`
-  - Postgres: `POSTGRES_USER=christian`, `POSTGRES_PASSWORD=123!Warum`, `POSTGRES_DB=app`
+  - Postgres: `POSTGRES_USER=<user>`, `POSTGRES_PASSWORD=<set-secret>`, `POSTGRES_DB=app`
 
 ### 2) Stack starten (nach Reboot)
 ```bash
@@ -70,7 +70,7 @@ curl -H "Host: ga.ce1doc.jkce.de" https://ga.ce1doc.jkce.de/health
 
 ### 5) Alexa-Skill Einrichtung (Developer Console)
 - Endpoint: `https://ga.ce1doc.jkce.de/alexa`
-- Account Linking: Auth-Code-Grant, Client-ID/Secret: `alexa-prod-ga` / `123warum`
+- Account Linking: Auth-Code-Grant, Client-ID/Secret aus der Console verwenden
 - Redirect-URIs: exakt aus der Console übernehmen und in `ALEXA_REDIRECT_URIS` eintragen (kommagetrennt).
 
 ### 6) Produktiver Test
@@ -97,7 +97,7 @@ Wenn der Skill innerhalb von 60 Sekunden nach “Alexa, Stopp” erneut gestarte
 - Fallback bei Fehler/500 → GPT-5.1
 
 ### 7) Sicherheitshinweis
-Derzeit sind schwache Passwörter/Secrets im Einsatz (`ADMIN_PASS`, `SESSION_SECRET`, `ALEXA_CLIENT_SECRET`). Vor echtem Livebetrieb zwingend auf starke, geheime Werte ändern. ALEXA_REDIRECT_URIS korrekt pflegen.
+Alle Secrets muessen geheim bleiben und duerfen nicht in das Repo. Verwende nur Platzhalter in Doku und setze echte Werte in `.env`.
 
 ### Offene Punkte
 - Ein-Wort-Antworten wie “allgemein” funktionieren nur mit Trägerphrase oder separaten Intents. Entscheidung: kurze Trägerphrasen nutzen oder eigene Intents (z. B. Allgemein/Beispiel) anlegen.
