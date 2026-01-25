@@ -1,5 +1,13 @@
 # Alexa_KI
 
+[![Repository](https://img.shields.io/badge/repo-private-lightgrey)](https://github.com/christianjkce/Alexa_KI)
+
+## Quick Links
+- Playbook: `docs/Playbook.md`
+- Deployment: `docs/deploy.md`
+- Testing: `docs/testing.md`
+- Alexa Model: `skill-package/interactionModels/custom/de-DE.json`
+
 Backend und Web-App fuer den Alexa Skill "K.I.".
 
 ## Inhalte
