@@ -3290,6 +3290,7 @@ const handleAuthorize = async (req, res, url) => {
       );
     }
     const stored = userStore.getUser(resolvedUser);
+    const accountUserId = stored?.username || resolvedUser || "";
     console.info("Authorize login attempt", {
       rawUser,
       resolvedUser,
@@ -4331,6 +4332,25 @@ const applyModelTokenBudget = (messages = [], modelId) => {
   };
 };
 
+const isContextTooLargeError = (text) => {
+  const normalized = String(text || "").toLowerCase();
+  return (
+    normalized.includes("context length") ||
+    normalized.includes("excessively large context") ||
+    normalized.includes("context too large")
+  );
+};
+
+const reduceToMinimalMessages = (messages) => {
+  if (!Array.isArray(messages) || messages.length <= 2) return messages;
+  const system = messages.find((msg) => msg?.role === "system");
+  const lastUser = [...messages].reverse().find((msg) => msg?.role === "user");
+  const minimal = [];
+  if (system) minimal.push(system);
+  if (lastUser) minimal.push(lastUser);
+  return minimal.length ? minimal : messages.slice(-2);
+};
+
 const extractStraicoText = (payload) => {
   const collectText = (value, depth = 0) => {
     if (!value || depth > 4) return [];
@@ -4639,6 +4659,12 @@ const straicoChatCompletions = async (messages, options = {}) => {
       } catch {
         json = { raw: text };
       }
+      const errorText =
+        (typeof json?.error === "string" && json.error) ||
+        json?.error?.error ||
+        json?.detail ||
+        "";
+      const contextTooLarge = isContextTooLargeError(errorText);
       const responseModel = json?.model || json?.model_id || "";
       if (responseModel) {
         console.info("Straico response model", {
@@ -4666,7 +4692,7 @@ const straicoChatCompletions = async (messages, options = {}) => {
             payloadChars,
           });
         }
-        if (resp.status === 500 && modelId && allowModelDeactivate) {
+        if (resp.status === 500 && modelId && allowModelDeactivate && !contextTooLarge) {
           markModelInactive(modelId, "straico_500");
         }
       } else if (elapsedMs > 2000) {
@@ -4679,7 +4705,15 @@ const straicoChatCompletions = async (messages, options = {}) => {
       }
       const statModel = responseModel || modelId;
       if (recordStats) recordLlmStat(statModel, elapsedMs, resp.status);
-      return { ok: resp.ok, status: resp.status, json, elapsedMs, responseModel: statModel };
+      return {
+        ok: resp.ok,
+        status: resp.status,
+        json,
+        elapsedMs,
+        responseModel: statModel,
+        contextTooLarge,
+        errorText,
+      };
     };
 
     const primaryBody = { ...baseBody };
@@ -4704,10 +4738,27 @@ const straicoChatCompletions = async (messages, options = {}) => {
     if (primaryResult.ok) return primaryResult;
 
     const errorText =
+      primaryResult.errorText ||
       (typeof primaryResult.json?.error === "string" && primaryResult.json.error) ||
       primaryResult.json?.error?.error ||
       primaryResult.json?.detail ||
       "";
+    const contextTooLarge = Boolean(primaryResult.contextTooLarge);
+    if (contextTooLarge) {
+      console.warn("Straico context too large; retrying with minimal messages.", {
+        requestId: options.requestId || "",
+        label: primaryLabel,
+      });
+      const minimalBody = { ...baseBody, messages: reduceToMinimalMessages(baseBody.messages) };
+      const fallbackModel = options.fallbackModel || config.straicoFallbackModel || selectedModel;
+      if (fallbackModel) minimalBody.model = fallbackModel;
+      minimalBody.replace_failed_model = false;
+      return await sendRequest(
+        minimalBody,
+        options.label ? `${options.label}-context-trim` : "model-context-trim",
+        fallbackModel
+      );
+    }
     const shouldRetryWithModel =
       primaryResult.status === 422 ||
       primaryResult.status === 500 ||
@@ -6247,7 +6298,9 @@ const handleChatUtterance = async ({
     });
     llmElapsedMs = result.elapsedMs || llmElapsedMs;
     if (!result.ok && (result.status === 504 || result.status === 500)) {
-      markModelInactive(modelToUse, "timeout_or_500");
+      if (!result.contextTooLarge) {
+        markModelInactive(modelToUse, "timeout_or_500");
+      }
       const nextModel = await selectActiveModel(config.straicoFallbackModel || "");
       if (nextModel && nextModel !== modelToUse) {
         chosenModel = nextModel;
