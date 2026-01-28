@@ -4834,6 +4834,19 @@ const classifyStraicoMode = (utterance) => {
   return "short";
 };
 
+const isLocationRelevant = (utterance, detectedLocation) => {
+  if (detectedLocation) return true;
+  const text = String(utterance || "").toLowerCase();
+  if (isWeatherQuery(text)) return true;
+  if (/\b(ort|stadt|land|region|uhrzeit|zeit|temperatur|wetter|klima)\b/.test(text)) {
+    return true;
+  }
+  if (/\b(in|bei|nahe|rund um)\b/.test(text)) {
+    return true;
+  }
+  return false;
+};
+
 const straicoPromptForMode = (mode) => {
   const base =
     "Erzeuge Text, der spaeter fuer eine Sprachausgabe genutzt wird. " +
@@ -5974,7 +5987,9 @@ const handleChatUtterance = async ({
   }
   let userPrompt = normalizedUtterance;
   if (locationContext && !isWeatherQuery(normalizedUtterance)) {
-    userPrompt = `Kontext: Ort ist ${locationContext}. ${normalizedUtterance}`.trim();
+    if (isLocationRelevant(normalizedUtterance, detectedLocation)) {
+      userPrompt = `Kontext: Ort ist ${locationContext}. ${normalizedUtterance}`.trim();
+    }
   }
   const forceLongResponse = useStraicoChat() && scenario.chunked;
   let longChunkActive = false;
