@@ -39,6 +39,7 @@ const config = {
   alexaTimeoutBufferMs: Number(process.env.ALEXA_TIMEOUT_BUFFER_MS) || 300,
   pendingResponseBackgroundTimeoutMs:
     Number(process.env.PENDING_RESPONSE_BG_TIMEOUT_MS) || 9000,
+  alexaTimeoutPreemptMs: Number(process.env.ALEXA_PREEMPT_MS) || 600,
   crokChatActionName: process.env.CROK_CHAT_ACTION_NAME || "chat",
   crokChatParamName: process.env.CROK_CHAT_PARAM_NAME || "text",
   crokChatMode: process.env.CROK_CHAT_MODE || "",
@@ -65,6 +66,10 @@ const config = {
     process.env.STRAICO_MODEL_CLAUDE_SONNET || "anthropic/claude-sonnet-4.5",
   straicoModelGrokFast: process.env.STRAICO_MODEL_GROK_FAST || "x-ai/grok-4-fast",
   straicoWebModels: (process.env.STRAICO_WEB_MODELS || "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean),
+  straicoBlockedModels: (process.env.STRAICO_BLOCKED_MODELS || "x-ai/grok-4")
     .split(",")
     .map((s) => s.trim())
     .filter(Boolean),
@@ -226,7 +231,7 @@ const sendHtml = (res, status, html) => {
 };
 
 const logoHead = `<link rel="icon" href="/logo.png" type="image/png" />`;
-const logoImg = `<img class="logo" src="/logo.png" alt="K. I. Logo" />`;
+const logoImg = `<img class="logo" src="/logo.png" alt="KI Logo" />`;
 const uiFont =
   '<link rel="preconnect" href="https://fonts.googleapis.com" />' +
   '<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />' +
@@ -600,7 +605,9 @@ const runChatWithTimeout = async ({
   };
   const timeoutMs = Math.max(
     800,
-    (responseBudgetMs || config.alexaResponseTimeoutMs) - config.alexaTimeoutBufferMs - 100
+    (responseBudgetMs || config.alexaResponseTimeoutMs) -
+      config.alexaTimeoutBufferMs -
+      config.alexaTimeoutPreemptMs
   );
   const chat = await Promise.race([
     chatPromise,
@@ -724,6 +731,7 @@ const updateEnvFile = (updates) => {
     "QA_USER_EMAIL",
     "QA_USER_PASSWORD",
     "ALEXA_TIMEOUT_BUFFER_MS",
+    "ALEXA_PREEMPT_MS",
     "PENDING_RESPONSE_BG_TIMEOUT_MS",
     "MODEL_SELECTION_TEST_TIMEOUT_MS",
     "CROK_CHAT_HISTORY_MAX",
@@ -734,6 +742,7 @@ const updateEnvFile = (updates) => {
     "STRAICO_MODEL_CLAUDE_SONNET",
     "STRAICO_MODEL_GROK_FAST",
     "STRAICO_WEB_MODELS",
+    "STRAICO_BLOCKED_MODELS",
     "STRAICO_STORY_MODEL",
     "STRAICO_FALLBACK_MODEL",
     "STRAICO_MAX_TOKENS_SHORT",
@@ -1094,7 +1103,7 @@ const sendVerificationEmail = async ({ username, email }) => {
   )}&token=${encodeURIComponent(verifyToken)}`;
   const mail = await smtpSend({
     to: email,
-    subject: "Bestaetige deinen K. I. Zugang",
+    subject: "Bestaetige deinen KI Zugang",
     text: `Bitte bestaetige deinen Zugang:\n${verifyUrl}\n\nLink ist ${VERIFY_LINK_TTL_TEXT} gueltig.`,
   });
   return { mail, verifyToken, verifyUntil, verifyUrl };
@@ -1188,12 +1197,25 @@ const perplexityChatCompletion = async ({ messages, maxTokens, timeoutMs }) => {
 };
 
 const extractPerplexityText = (json) => {
-  return (
+  const raw =
     json?.choices?.[0]?.message?.content ||
     json?.choices?.[0]?.text ||
     json?.answer ||
-    ""
-  );
+    "";
+  return stripMarkdown(raw);
+};
+
+const stripMarkdown = (text) => {
+  if (!text) return "";
+  return String(text)
+    .replace(/\*\*(.*?)\*\*/g, "$1")
+    .replace(/_(.*?)_/g, "$1")
+    .replace(/`([^`]+)`/g, "$1")
+    .replace(/#+\s*/g, "")
+    .replace(/\[(.*?)\]\([^)]*\)/g, "$1")
+    .replace(/\[(\d+)\]/g, "")
+    .replace(/^\s*[-*]\s+/gm, "")
+    .trim();
 };
 
 const shouldAskForLocation = (text) => {
@@ -1249,7 +1271,7 @@ const runPerplexityWeather = async ({
     });
     if (search.ok) {
       const text = extractPerplexityText(search.json);
-      if (text) return { text, usedStraico: false };
+      if (text) return { text: stripMarkdown(text), usedStraico: false };
     } else {
       lastStatus = search.status;
       lastError = search.json?.error;
@@ -1276,7 +1298,7 @@ const runPerplexityWeather = async ({
     });
     if (straico.ok) {
       const text = extractStraicoText(straico.json);
-      if (text) return { text, usedStraico: true };
+        if (text) return { text: stripMarkdown(text), usedStraico: true };
     }
     if (!straico.ok) {
       lastStatus = straico.status;
@@ -1602,7 +1624,7 @@ const renderLogin = (message = "") => {
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>K. I. - Anmeldung</title>
+  <title>KI - Anmeldung</title>
   ${uiHead()}
 </head>
 <body>
@@ -1649,7 +1671,7 @@ const renderAuthorizePage = ({ clientId = "", redirectUri = "", state = "", scop
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>K. I. - Skill-Verknuepfung</title>
+  <title>KI - Skill-Verknuepfung</title>
   ${uiHead()}
 </head>
 <body>
@@ -1659,7 +1681,7 @@ const renderAuthorizePage = ({ clientId = "", redirectUri = "", state = "", scop
         <div class="brand">
           ${logoImg}
           <div>
-            <h1 class="hero-title">K. I. mit Alexa verbinden</h1>
+            <h1 class="hero-title">KI mit Alexa verbinden</h1>
             <p class="lead">Bitte melde dich an, um den Skill sicher mit deinem Konto zu verknuepfen.</p>
           </div>
         </div>
@@ -1679,12 +1701,13 @@ const renderAuthorizePage = ({ clientId = "", redirectUri = "", state = "", scop
           <label>Passwort
             <input type="password" name="password" autocomplete="current-password" autocapitalize="none" autocorrect="off" spellcheck="false" />
           </label>
-          <div class="actions">
-            <button class="btn" type="submit">Zugriff erlauben</button>
-          </div>
-        </form>
-        <div class="status">Kein Konto? <a href="/register">Jetzt registrieren</a>. <a href="/reset">Passwort vergessen</a>. <a href="/verify/resend">Bestaetigungslink anfordern</a>.</div>
-        <div class="form-help">Diese Seite dient nur der Verknuepfung des Skills.</div>
+        <div class="actions">
+          <button class="btn" type="submit">Zugriff erlauben</button>
+        </div>
+      </form>
+      <div class="form-help">Login mit E-Mail oder Benutzername. Die E-Mail muss bestaetigt sein.</div>
+      <div class="status">Kein Konto? <a href="/register">Jetzt registrieren</a>. <a href="/reset">Passwort vergessen</a>. <a href="/verify/resend">Bestaetigungslink anfordern</a>.</div>
+      <div class="form-help">Diese Seite dient nur der Verknuepfung des Skills.</div>
       </div>
     </section>
   </div>
@@ -1703,7 +1726,7 @@ const renderAdminLogin = (message = "") => {
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>K. I. - Admin Login</title>
+  <title>KI - Admin Login</title>
   ${uiHead()}
 </head>
 <body>
@@ -1749,7 +1772,7 @@ const renderRegister = (message = "") => {
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>K. I. - Registrierung</title>
+  <title>KI - Registrierung</title>
   ${uiHead()}
 </head>
 <body>
@@ -1814,7 +1837,7 @@ const renderLanding = (message = "") => {
 <head>
   <meta charset=\"utf-8\">
   <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">
-  <title>K. I. Alexa Skill</title>
+  <title>KI Alexa Skill</title>
   ${uiHead()}
 </head>
 <body>
@@ -1824,7 +1847,7 @@ const renderLanding = (message = "") => {
         <div class=\"brand\">
           ${logoImg}
           <div>
-            <h1 class=\"hero-title\">K. I. - Dein persoenlicher Alexa-Assistent</h1>
+            <h1 class=\"hero-title\">KI - Dein persoenlicher Alexa-Assistent</h1>
             <p class=\"lead\">Der Skill fuer natuerliche, gesprochene Gespraeche auf Deutsch. Schnell, fokussiert und fuer den Alltag optimiert.</p>
           </div>
         </div>
@@ -1846,12 +1869,12 @@ const renderLanding = (message = "") => {
           <div class=\"step\">
             <span>Schritt 2</span>
             <h3>Skill verknuepfen</h3>
-            <p class=\"lead\">Melde dich in der Alexa App an und verbinde deinen Account mit K. I.</p>
+            <p class=\"lead\">Melde dich in der Alexa App an und verbinde deinen Account mit KI</p>
           </div>
           <div class=\"step\">
             <span>Schritt 3</span>
             <h3>Lossprechen</h3>
-            <p class=\"lead\">Sag einfach KI. K. I. fuehrt dich durch das Gespraech.</p>
+            <p class=\"lead\">Sag einfach KI oder meinen Namen Klara. KI fuehrt dich durch das Gespraech.</p>
           </div>
         </div>
       </div>
@@ -1860,7 +1883,7 @@ const renderLanding = (message = "") => {
     <section class=\"grid cols-3\" style=\"margin-top: 24px\">
       <div class=\"card\">
         <h2 class=\"section-title\">Account & Betrieb</h2>
-        <p class=\"lead\">Dieses Konto verwaltet den offiziellen K. I. Skill. Hier laufen Tests, Konfiguration und Betrieb.</p>
+        <p class=\"lead\">Dieses Konto verwaltet den offiziellen KI Skill. Hier laufen Tests, Konfiguration und Betrieb.</p>
         <p class=\"lead\">Sprache: de-DE. Fokus auf klare Rueckfragen und natuerliche Antworten.</p>
         <p class=\"lead\">Hinweis: Der Account ist derzeit nicht bezahlt. Die Nutzung kann daher eingeschraenkt sein.</p>
       </div>
@@ -1914,7 +1937,7 @@ const renderPrivacy = () => `<!doctype html>
         <div class="brand">
           ${logoImg}
           <div>
-            <h1 class="hero-title">Datenschutzerklaerung fuer den Alexa Skill "K. I."</h1>
+            <h1 class="hero-title">Datenschutzerklaerung fuer den Alexa Skill "KI"</h1>
             <p class="lead">Informationen zur Verarbeitung personenbezogener Daten fuer Skill und Webanwendung.</p>
           </div>
         </div>
@@ -1928,12 +1951,12 @@ const renderPrivacy = () => `<!doctype html>
           </div>
           <div class="doc-section">
             <h3>2. Allgemeines zur Datenverarbeitung</h3>
-            <p class="lead">Der Schutz personenbezogener Daten ist uns ein wichtiges Anliegen. Diese Datenschutzerklaerung informiert darueber, welche personenbezogenen Daten im Zusammenhang mit der Nutzung des Alexa Skills "K. I." sowie der zugehoerigen Webanwendung verarbeitet werden.</p>
+            <p class="lead">Der Schutz personenbezogener Daten ist uns ein wichtiges Anliegen. Diese Datenschutzerklaerung informiert darueber, welche personenbezogenen Daten im Zusammenhang mit der Nutzung des Alexa Skills "KI" sowie der zugehoerigen Webanwendung verarbeitet werden.</p>
             <p class="lead">Die Verarbeitung erfolgt ausschliesslich im Rahmen der geltenden datenschutzrechtlichen Vorschriften, insbesondere der DSGVO.</p>
           </div>
           <div class="doc-section">
-            <h3>3. Nutzung des Alexa Skills "K. I."</h3>
-            <p class="lead">Der Skill "K. I." ist eine sprachbasierte Anwendung, die ueber Amazon Alexa genutzt wird. Zur Bereitstellung personalisierter Funktionen kann eine Verknuepfung zwischen dem Alexa-Konto und einem Benutzerkonto des Anbieters erfolgen (Account Linking).</p>
+            <h3>3. Nutzung des Alexa Skills "KI"</h3>
+            <p class="lead">Der Skill "KI" ist eine sprachbasierte Anwendung, die ueber Amazon Alexa genutzt wird. Zur Bereitstellung personalisierter Funktionen kann eine Verknuepfung zwischen dem Alexa-Konto und einem Benutzerkonto des Anbieters erfolgen (Account Linking).</p>
           </div>
           <div class="doc-section">
             <h3>4.1 Session- und Nutzungsdaten</h3>
@@ -2024,7 +2047,7 @@ const renderTerms = () => `<!doctype html>
         <div class="brand">
           ${logoImg}
           <div>
-            <h1 class="hero-title">Nutzungsbedingungen fuer den Alexa Skill "K. I."</h1>
+            <h1 class="hero-title">Nutzungsbedingungen fuer den Alexa Skill "KI"</h1>
             <p class="lead">Bitte lies diese Bedingungen vor der Nutzung des Skills.</p>
           </div>
         </div>
@@ -2034,7 +2057,7 @@ const renderTerms = () => `<!doctype html>
         <div class="grid">
           <div class="doc-section">
             <h3>1. Geltungsbereich</h3>
-            <p class="lead">Diese Nutzungsbedingungen regeln die Nutzung des Alexa Skills "K. I.", bereitgestellt durch:</p>
+            <p class="lead">Diese Nutzungsbedingungen regeln die Nutzung des Alexa Skills "KI", bereitgestellt durch:</p>
             <p class="lead">Christian Eichhorn<br />Weinbergstr. 3<br />96523 Steinach<br /><a href="mailto:info@jkce.de">info@jkce.de</a></p>
             <p class="lead">Mit der Nutzung des Skills erkennt der Nutzer diese Nutzungsbedingungen an.</p>
           </div>
@@ -2130,7 +2153,7 @@ const renderImpressum = () => `<!doctype html>
           </div>
           <div class="doc-section">
             <h3>Hinweis zum Angebot</h3>
-            <p class="lead">Diese Website dient der Bereitstellung und Verwaltung des Alexa Skills "K. I." sowie der zugehoerigen Nutzerkonten und Funktionen. Inhalte werden fortlaufend gepflegt und koennen angepasst werden, wenn sich der Funktionsumfang aendert.</p>
+            <p class="lead">Diese Website dient der Bereitstellung und Verwaltung des Alexa Skills "KI" sowie der zugehoerigen Nutzerkonten und Funktionen. Inhalte werden fortlaufend gepflegt und koennen angepasst werden, wenn sich der Funktionsumfang aendert.</p>
           </div>
         </div>
       </section>
@@ -2160,7 +2183,7 @@ const renderUserDashboard = (userId, message = "") => {
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>K. I. Nutzerkonto</title>
+  <title>KI Nutzerkonto</title>
   ${uiHead()}
 </head>
 <body>
@@ -2366,7 +2389,7 @@ const handleRegisterRequest = async (req, res) => {
   )}&token=${encodeURIComponent(verifyToken)}`;
   const mail = await smtpSend({
     to: email,
-    subject: "Bestaetige deinen K. I. Zugang",
+    subject: "Bestaetige deinen KI Zugang",
     text: `Bitte bestaetige deinen Zugang:\n${verifyUrl}\n\nLink ist ${VERIFY_LINK_TTL_TEXT} gueltig.`,
   });
   if (!mail.ok) {
@@ -2539,7 +2562,7 @@ const renderResetRequest = (message = "") => {
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>K. I. - Passwort zuruecksetzen</title>
+  <title>KI - Passwort zuruecksetzen</title>
   ${uiHead()}
 </head>
 <body>
@@ -2583,7 +2606,7 @@ const renderVerifyResend = (message = "", identifier = "") => {
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>K. I. - Bestaetigungslink</title>
+  <title>KI - Bestaetigungslink</title>
   ${uiHead()}
 </head>
 <body>
@@ -2627,7 +2650,7 @@ const renderResetConfirm = (message = "", user = "", token = "") => {
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>K. I. - Neues Passwort</title>
+  <title>KI - Neues Passwort</title>
   ${uiHead()}
 </head>
 <body>
@@ -2735,7 +2758,7 @@ const renderAdmin = (userId, message = "", events = [], eventMeta = {}) => {
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>K. I. - Admin</title>
+  <title>KI - Admin</title>
   ${logoHead}
   <style>
     :root {
@@ -2833,7 +2856,7 @@ const renderAdmin = (userId, message = "", events = [], eventMeta = {}) => {
     <div class="card">
       <div class="title-row">
         ${logoImg}
-        <h1>K. I. Admin</h1>
+        <h1>KI Admin</h1>
       </div>
       <div class="muted">Angemeldet als ${escapeHtml(userId)} · <a href="/admin/logout">Logout</a></div>
       ${notice}
@@ -2987,6 +3010,7 @@ const renderAdmin = (userId, message = "", events = [], eventMeta = {}) => {
           <label>Claude Sonnet<input name="STRAICO_MODEL_CLAUDE_SONNET" value="${escapeHtml(envValue("STRAICO_MODEL_CLAUDE_SONNET", config.straicoModelClaudeSonnet))}" /></label>
           <label>Grok Fast<input name="STRAICO_MODEL_GROK_FAST" value="${escapeHtml(envValue("STRAICO_MODEL_GROK_FAST", config.straicoModelGrokFast))}" /></label>
           <label>Web-Modelle<input name="STRAICO_WEB_MODELS" value="${escapeHtml(envValue("STRAICO_WEB_MODELS", config.straicoWebModels.join(", ")))}" /></label>
+          <label>Blocked Models<input name="STRAICO_BLOCKED_MODELS" value="${escapeHtml(envValue("STRAICO_BLOCKED_MODELS", config.straicoBlockedModels.join(", ")))}" /></label>
           <label>Story Modell<input name="STRAICO_STORY_MODEL" value="${escapeHtml(envValue("STRAICO_STORY_MODEL", config.straicoStoryModel))}" /></label>
           <label>Fallback<input name="STRAICO_FALLBACK_MODEL" value="${escapeHtml(envValue("STRAICO_FALLBACK_MODEL", config.straicoFallbackModel))}" /></label>
         </div>
@@ -3019,6 +3043,7 @@ const renderAdmin = (userId, message = "", events = [], eventMeta = {}) => {
           <label>INTERACTIVE_TIMEOUT_MS<input name="STRAICO_INTERACTIVE_TIMEOUT_MS" value="${escapeHtml(envValue("STRAICO_INTERACTIVE_TIMEOUT_MS", String(config.straicoInteractiveTimeoutMs)))}" /></label>
           <label>STORY_TIMEOUT_MS<input name="STRAICO_STORY_TIMEOUT_MS" value="${escapeHtml(envValue("STRAICO_STORY_TIMEOUT_MS", String(config.straicoStoryTimeoutMs)))}" /></label>
           <label>ALEXA_TIMEOUT_BUFFER_MS<input name="ALEXA_TIMEOUT_BUFFER_MS" value="${escapeHtml(envValue("ALEXA_TIMEOUT_BUFFER_MS", String(config.alexaTimeoutBufferMs)))}" /></label>
+          <label>ALEXA_PREEMPT_MS<input name="ALEXA_PREEMPT_MS" value="${escapeHtml(envValue("ALEXA_PREEMPT_MS", String(config.alexaTimeoutPreemptMs)))}" /></label>
           <label>STORY_MAX_TOKENS<input name="STRAICO_STORY_MAX_TOKENS" value="${escapeHtml(envValue("STRAICO_STORY_MAX_TOKENS", String(config.straicoStoryMaxTokens)))}" /></label>
           <label>STORY_CHUNK_MAX_CHARS<input name="STRAICO_STORY_CHUNK_MAX_CHARS" value="${escapeHtml(envValue("STRAICO_STORY_CHUNK_MAX_CHARS", String(config.straicoStoryChunkMaxChars)))}" /></label>
           <label>GENERIC_CHUNK_MAX_TOKENS<input name="STRAICO_GENERIC_CHUNK_MAX_TOKENS" value="${escapeHtml(envValue("STRAICO_GENERIC_CHUNK_MAX_TOKENS", String(config.straicoGenericChunkMaxTokens)))}" /></label>
@@ -3313,7 +3338,7 @@ const handleAuthorize = async (req, res, url) => {
           redirectUri: bodyRedirect,
           state: bodyState,
           scope: bodyScope,
-          message: "Bitte E-Mail und Passwort eingeben.",
+          message: "Bitte E-Mail oder Benutzername sowie Passwort eingeben.",
         })
       );
     }
@@ -3340,7 +3365,7 @@ const handleAuthorize = async (req, res, url) => {
       });
       const message = stored && !verified
         ? "Bitte E-Mail bestaetigen, bevor du den Skill verknuepfst. Link erneut anfordern: /verify/resend"
-        : "Anmeldung fehlgeschlagen. Bitte pruefe E-Mail/Passwort oder setze dein Passwort zurueck: /reset";
+        : "Anmeldung fehlgeschlagen. Bitte pruefe E-Mail/Benutzername und Passwort. Falls du deine E-Mail noch nicht bestaetigt hast, nutze /verify/resend. Passwort vergessen? /reset";
       return sendHtml(
         res,
         401,
@@ -3942,6 +3967,8 @@ const maybeRefreshModelSelections = () => {
 
 const getSelectedModelForUseCase = (useCase, fallback) => {
   const picked = modelSelectionCache.selected?.[useCase];
+  if (picked && isModelActive(picked)) return picked;
+  if (fallback && isModelActive(fallback)) return fallback;
   return picked || fallback;
 };
 let improverDisabledUntil = 0;
@@ -4032,8 +4059,17 @@ const scoreModel = (model) => {
   return editors * 20000 + providerBonus + Math.min(wordLimit, 200000) / 1000 - coins * 0.5;
 };
 
+const isBlockedModel = (id) => {
+  if (!id) return false;
+  const blocked = Array.isArray(config.straicoBlockedModels)
+    ? config.straicoBlockedModels
+    : [];
+  return blocked.some((entry) => entry && id.toLowerCase() === entry.toLowerCase());
+};
+
 const isModelActive = (id) => {
   if (!id) return false;
+  if (isBlockedModel(id)) return false;
   const until = inactiveModels.get(id);
   if (!until) return true;
   if (Date.now() > until) {
@@ -5885,7 +5921,7 @@ const handleChatUtterance = async ({
         responseBudgetMs,
       });
     }
-    speech = "Ich habe dich nicht verstanden. Was soll ich an die KI schicken?";
+    speech = "Ich hab dich nicht verstanden. Bitte fange den Satz mit Klara oder bitte an.";
     shouldEndSession = false;
     repromptText = "Sag zum Beispiel: erzaehle eine Geschichte.";
     return { speech, shouldEndSession, repromptText, elicitFollowup };
@@ -5935,6 +5971,15 @@ const handleChatUtterance = async ({
   const wantsDetail = !shouldTreatAsStory && isDetailedRequest(normalizedUtterance);
   let responseLimits = wantsDetail ? applyDetailLimits(route) : route;
   let straicoMode = scenario.mode === "short" ? responseLimits.mode : scenario.mode;
+  const improverSkipIntents = new Set([
+    "FACT_SHORT",
+    "HOWTO_SIMPLE",
+    "TASK_TOOL",
+    "CHAT_SMALLTALK",
+    "REALTIME_TREND",
+  ]);
+  const shouldSkipImprover =
+    responseLimits.maxTokens <= 240 || improverSkipIntents.has(intentInfo.intent);
   if (shouldTreatAsStory) {
     route = getIntentRoute({ intent: "STORY", complexity: intentInfo.complexity });
     responseLimits = route;
@@ -5956,7 +6001,8 @@ const handleChatUtterance = async ({
     useStraicoChat() &&
     isImproverActive() &&
     !shouldTreatAsStory &&
-    !isWeatherQuery(normalizedUtterance)
+    !isWeatherQuery(normalizedUtterance) &&
+    !shouldSkipImprover
   ) {
     const decisionBudget = config.promptImproverDecisionTimeoutMs;
     const elapsedMs = Date.now() - startedAt;
@@ -6126,7 +6172,8 @@ const handleChatUtterance = async ({
   } else if (
     useStraicoChat() &&
     isImproverActive() &&
-    intentInfo.intent !== "REALTIME_TREND"
+    intentInfo.intent !== "REALTIME_TREND" &&
+    !shouldSkipImprover
   ) {
     const elapsedMs = Date.now() - startedAt;
     const remainingMs =
@@ -6215,7 +6262,7 @@ const handleChatUtterance = async ({
           usedPerplexity = true;
           result = {
             ok: true,
-            json: { choices: [{ message: { content: text } }] },
+            json: { choices: [{ message: { content: stripMarkdown(text) } }] },
             elapsedMs: llmElapsedMs,
           };
         }
@@ -6248,7 +6295,7 @@ const handleChatUtterance = async ({
           usedStraico = true;
           result = {
             ok: true,
-            json: { choices: [{ message: { content: text } }] },
+            json: { choices: [{ message: { content: stripMarkdown(text) } }] },
             elapsedMs: llmElapsedMs,
           };
         }
@@ -6315,21 +6362,21 @@ const handleChatUtterance = async ({
     if (!result.ok && (result.status === 504 || result.status === 500)) {
       if (!result.contextTooLarge) {
         markModelInactive(modelToUse, "timeout_or_500");
-      }
-      const nextModel = await selectActiveModel(config.straicoFallbackModel || "");
-      if (nextModel && nextModel !== modelToUse) {
-        chosenModel = nextModel;
-        const retryBudget = Math.max(1200, timeoutBudget);
-        result = await straicoChatCompletions(messages, {
-          systemPrompt: straicoPromptForMode("short"),
-          model: nextModel,
-          maxTokens: Math.min(80, responseLimits.maxTokens || 80),
-          useAutoSelector: false,
-          fallbackModel: null,
-          timeoutMs: retryBudget,
-          requestId: requestMeta?.requestId || "",
-        });
-        llmElapsedMs = result.elapsedMs || llmElapsedMs;
+        const nextModel = await selectActiveModel(config.straicoFallbackModel || "");
+        if (nextModel && nextModel !== modelToUse) {
+          chosenModel = nextModel;
+          const retryBudget = Math.max(1200, timeoutBudget);
+          result = await straicoChatCompletions(messages, {
+            systemPrompt: straicoPromptForMode("short"),
+            model: nextModel,
+            maxTokens: Math.min(80, responseLimits.maxTokens || 80),
+            useAutoSelector: false,
+            fallbackModel: null,
+            timeoutMs: retryBudget,
+            requestId: requestMeta?.requestId || "",
+          });
+          llmElapsedMs = result.elapsedMs || llmElapsedMs;
+        }
       }
     }
   } else {
@@ -6379,17 +6426,14 @@ const handleChatUtterance = async ({
           fallbackModel,
           previousModel: chosenModel,
         });
-        const strictMode = shouldTreatAsStory ? "story_continue" : "followup";
+        const strictMode = "short";
         const retry = await straicoChatCompletions(messages, {
           systemPrompt: straicoPromptForMode(strictMode),
           model: fallbackModel,
-          maxTokens: longChunkActive ? maxTokens : responseLimits.maxTokens,
+          maxTokens: Math.min(120, responseLimits.maxTokens || 120),
           useAutoSelector: false,
           fallbackModel: null,
-          timeoutMs: Math.max(
-            1500,
-            Math.min(config.straicoRequestTimeoutMs, config.alexaResponseTimeoutMs - 700)
-          ),
+          timeoutMs: Math.min(1500, config.straicoInteractiveTimeoutMs),
           requestId: requestMeta?.requestId || "",
         });
         if (retry.ok) {
@@ -6418,33 +6462,14 @@ const handleChatUtterance = async ({
       });
     }
     if (usedStraico && !assistantReply) {
-      const pending = schedulePendingResponse({
-        userId,
-        accountUserId,
-        requestId: requestMeta?.requestId || "",
-        prompt: trimmed,
-        history: sessionAttributes.chatHistory,
-        messages,
-        straicoMode,
-        model: config.straicoFallbackModel || chosenModel || route.model,
-        maxTokens: responseLimits.maxTokens,
-      });
-      sessionAttributes.pendingResponseId = pending.pendingEntry?.id || "";
-      sessionAttributes.pendingResponseKey = pending.pendingUserKey;
-      sessionAttributes.pendingResponseUntil = Date.now() + config.pendingResponseTtlMs;
-      sessionAttributes.pendingResponseRequestId = requestMeta?.requestId || "";
-      sessionAttributes.pendingResponsePrompt = trimmed;
-      sessionAttributes.pendingResponseHistory = sessionAttributes.chatHistory || [];
-      speech = "Die Antwort dauert etwas laenger. Moechtest du warten?";
-      shouldEndSession = false;
-      repromptText = "Sag: ja oder nein.";
+      assistantReply =
+        "Entschuldigung, ich habe keine Antwort erhalten. Bitte versuche es erneut.";
       void logConversationEvent({
         userId,
         accountUserId,
-        eventType: "conversation_timeout",
+        eventType: "llm_error",
         payload: { reason: "empty_response" },
       });
-      return { speech, shouldEndSession, repromptText, elicitFollowup };
     }
     const isFollowupContext =
       wasExpectingFollowup || (history.length && isContinuationUtterance(trimmed));
@@ -6514,7 +6539,7 @@ const handleChatUtterance = async ({
       });
       if (retry.ok) {
         const retryText = extractStraicoText(retry.json);
-        if (retryText) assistantReply = retryText;
+        if (retryText) assistantReply = stripMarkdown(retryText);
       }
     }
     if (usedStraico && !assistantReply) {
@@ -6628,9 +6653,11 @@ const handleChatUtterance = async ({
       (useStraicoChat() && (straicoMode === "develop" || shouldTreatAsStory));
     if (elicitFollowup) {
       sessionAttributes.expectingFollowup = true;
-      repromptText = forceYesNoReprompt ? "Sag: ja oder nein." : "Bitte antworte kurz.";
+      repromptText = forceYesNoReprompt
+        ? "Sag: ja oder nein."
+        : "Sag bitte kurz, was du brauchst – nutze gerne meinen Namen Klara am Anfang.";
     } else {
-      repromptText = "Sag gern noch etwas zur KI.";
+      repromptText = "Sag gern noch etwas – nutze gern Klara am Anfang.";
     }
     if (forceYesNoReprompt) {
       sessionAttributes.awaitingLiveFallbackConfirm = true;
@@ -6640,6 +6667,16 @@ const handleChatUtterance = async ({
       sessionAttributes.storyActive = true;
       sessionAttributes.storyStage = straicoMode === "develop" ? "options" : "story";
     }
+  } else if (result.contextTooLarge) {
+    speech = "Deine Anfrage ist zu lang. Bitte kuerze sie etwas.";
+    shouldEndSession = false;
+    repromptText = "Sag die Frage bitte etwas kuerzer.";
+    void logConversationEvent({
+      userId,
+      accountUserId,
+      eventType: "llm_error",
+      payload: { reason: "context_too_large" },
+    });
   } else if (result.status === 504) {
     let recovered = false;
     if (useStraicoChat() && typeof responseBudgetMs === "number") {
@@ -6902,8 +6939,8 @@ const handleAlexa = async (req, res) => {
           }
           sessionAttributes.expectingFollowup = shouldElicitFollowup(pending.response);
           repromptText = sessionAttributes.expectingFollowup
-            ? "Bitte antworte kurz."
-            : "Sag gern noch etwas zur KI.";
+            ? "Sag bitte kurz, was du brauchst – nutze gerne meinen Namen Klara am Anfang."
+            : "Sag gern noch etwas – nutze gern Klara am Anfang.";
           clearPendingResponse(pendingUserKey);
           delete sessionAttributes.pendingResponseId;
           delete sessionAttributes.pendingResponseUntil;
@@ -6961,8 +6998,8 @@ const handleAlexa = async (req, res) => {
             }
             sessionAttributes.expectingFollowup = shouldElicitFollowup(speech);
             repromptText = sessionAttributes.expectingFollowup
-              ? "Bitte antworte kurz."
-              : "Sag gern noch etwas zur KI.";
+              ? "Sag bitte kurz, was du brauchst – nutze gerne meinen Namen Klara am Anfang."
+              : "Sag gern noch etwas – nutze gern Klara am Anfang.";
             clearPendingResponse(pendingUserKey);
             delete sessionAttributes.pendingResponseId;
             delete sessionAttributes.pendingResponseUntil;
@@ -7346,7 +7383,7 @@ const handleAlexa = async (req, res) => {
     });
   } else if (intent === "AMAZON.FallbackIntent") {
     speech =
-      "Ich konnte dich nicht verstehen. Antworte bitte im Satz oder beginne mit bitte.";
+      "Ich hab dich nicht verstanden. Bitte fange den Satz mit Klara oder bitte an.";
     shouldEndSession = false;
     repromptText = "Bitte antworte im Satz oder beginne mit bitte.";
     void logConversationEvent({

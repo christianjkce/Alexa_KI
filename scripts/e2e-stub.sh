@@ -13,6 +13,8 @@ ALEXA_CLIENT_SECRET="${ALEXA_CLIENT_SECRET:-local-secret}"
 ALEXA_REDIRECT_URI="${ALEXA_REDIRECT_URI:-http://localhost:3000/dev-callback}"
 ADMIN_DEFAULT_USER="${ADMIN_DEFAULT_USER:-admin}"
 ADMIN_PASS=<redacted>
+AUTH_USER="${AUTH_USER:-${ADMIN_DEFAULT_USER}}"
+AUTH_PASS="${AUTH_PASS:-${ADMIN_PASS}}"
 
 echo "[start] crok stub on :${CROK_STUB_PORT}"
 node scripts/mock-crok.js >/tmp/crok-stub.log 2>&1 &
@@ -41,7 +43,7 @@ base="http://localhost:${PORT}"
 echo "[step] authorize"
 auth_resp=$(curl -i -s -X POST "${base}/oauth/authorize?client_id=${ALEXA_CLIENT_ID}&redirect_uri=${ALEXA_REDIRECT_URI}&state=xyz&scope=test" \
   -H "Content-Type: application/x-www-form-urlencoded" \
-  -d "client_id=${ALEXA_CLIENT_ID}&redirect_uri=${ALEXA_REDIRECT_URI}&username=${ADMIN_DEFAULT_USER}&password=${ADMIN_PASS}")
+  -d "client_id=${ALEXA_CLIENT_ID}&redirect_uri=${ALEXA_REDIRECT_URI}&username=${AUTH_USER}&password=${AUTH_PASS}")
 echo "$auth_resp" | head -n 6 | tr -d '\r'
 code=$(echo "$auth_resp" | tr -d '\r' | awk -F"code=" '/Location/ { split($2,a,"&"); print a[1]; }')
 echo "[auth code] $code"
@@ -51,7 +53,9 @@ token_resp=$(curl -s -X POST "${base}/oauth/token" \
   -H "Content-Type: application/x-www-form-urlencoded" \
   -d "grant_type=authorization_code&client_id=${ALEXA_CLIENT_ID}&client_secret=${ALEXA_CLIENT_SECRET}&redirect_uri=${ALEXA_REDIRECT_URI}&code=${code}")
 echo "$token_resp"
+access=$(echo "$token_resp" | node -e "const d=JSON.parse(require('fs').readFileSync(0,'utf8')); console.log(d.access_token||'');")
 refresh=$(echo "$token_resp" | node -e "const d=JSON.parse(require('fs').readFileSync(0,'utf8')); console.log(d.refresh_token||'');")
+echo "[access token] ${access:+set}"
 echo "[refresh token] $refresh"
 
 echo "[step] token (refresh)"
@@ -64,6 +68,7 @@ echo "[step] alexa status intent"
 status_resp=$(curl -s -X POST "${base}/alexa" \
   -H "Content-Type: application/json" \
   -d '{
+    "context": { "System": { "user": { "accessToken": "'"${access}"'" } } },
     "request": {
       "type": "IntentRequest",
       "timestamp": "2024-01-01T00:00:00Z",
@@ -76,6 +81,7 @@ echo "[step] alexa action intent"
 action_resp=$(curl -s -X POST "${base}/alexa" \
   -H "Content-Type: application/json" \
   -d '{
+    "context": { "System": { "user": { "accessToken": "'"${access}"'" } } },
     "request": {
       "type": "IntentRequest",
       "timestamp": "2024-01-01T00:00:00Z",
@@ -89,7 +95,7 @@ chat_resp_1=$(curl -s -X POST "${base}/alexa" \
   -H "Content-Type: application/json" \
   -d '{
     "session": { "new": true, "sessionId": "amzn1.echo-api.session.mock", "attributes": {} },
-    "context": { "System": { "user": { "accessToken": "stub-token" } } },
+    "context": { "System": { "user": { "accessToken": "'"${access}"'" } } },
     "request": {
       "type": "IntentRequest",
       "timestamp": "2024-01-01T00:00:00Z",
@@ -105,7 +111,7 @@ chat_resp_2=$(curl -s -X POST "${base}/alexa" \
   -H "Content-Type: application/json" \
   -d "{
     \"session\": { \"new\": false, \"sessionId\": \"amzn1.echo-api.session.mock\", \"attributes\": { \"conversationId\": \"${conv_id}\" } },
-    \"context\": { \"System\": { \"user\": { \"accessToken\": \"stub-token\" } } },
+    \"context\": { \"System\": { \"user\": { \"accessToken\": \"${access}\" } } },
     \"request\": {
       \"type\": \"IntentRequest\",
       \"timestamp\": \"2024-01-01T00:00:00Z\",
@@ -113,3 +119,31 @@ chat_resp_2=$(curl -s -X POST "${base}/alexa" \
     }
   }")
 echo "$chat_resp_2"
+
+echo "[step] alexa weather intent"
+weather_resp=$(curl -s -X POST "${base}/alexa" \
+  -H "Content-Type: application/json" \
+  -d "{
+    \"session\": { \"new\": false, \"sessionId\": \"amzn1.echo-api.session.mock\", \"attributes\": {} },
+    \"context\": { \"System\": { \"user\": { \"accessToken\": \"${access}\" } } },
+    \"request\": {
+      \"type\": \"IntentRequest\",
+      \"timestamp\": \"2024-01-01T00:00:00Z\",
+      \"intent\": { \"name\": \"CrokChatIntent\", \"slots\": { \"Text\": { \"value\": \"Wie ist das Wetter in Berlin?\" } } }
+    }
+  }")
+echo "$weather_resp"
+
+echo "[step] alexa long response intent"
+long_resp=$(curl -s -X POST "${base}/alexa" \
+  -H "Content-Type: application/json" \
+  -d "{
+    \"session\": { \"new\": false, \"sessionId\": \"amzn1.echo-api.session.mock\", \"attributes\": {} },
+    \"context\": { \"System\": { \"user\": { \"accessToken\": \"${access}\" } } },
+    \"request\": {
+      \"type\": \"IntentRequest\",
+      \"timestamp\": \"2024-01-01T00:00:00Z\",
+      \"intent\": { \"name\": \"CrokChatIntent\", \"slots\": { \"Text\": { \"value\": \"Erzaehl mir eine sehr lange Geschichte in mehreren Abschnitten\" } } }
+    }
+  }")
+echo "$long_resp"

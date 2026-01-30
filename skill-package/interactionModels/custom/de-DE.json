@@ -13,7 +13,9 @@
             "meine antwort ist {Any}",
             "ich sage {Any}",
             "ich meine {Any}",
-            "das ist {Any}"
+            "das ist {Any}",
+            "klara {Any}",
+            "klara, {Any}"
           ]
         },
         {
@@ -33,6 +35,8 @@
                     "erzähle {Query}",
                     "erzähl mir {Query}",
                     "erzähl {Query}",
+            "klara {Query}",
+            "klara, {Query}",
             "hilf mir mit {Query}",
             "ich habe eine frage {Query}"
           ]

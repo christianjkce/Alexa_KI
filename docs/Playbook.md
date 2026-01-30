@@ -1,7 +1,7 @@
 # Playbook: Alexa_KI
 
 ## Purpose
-This repository powers the Alexa skill “K.I.” plus the supporting web app,
+This repository powers the Alexa skill “KI” plus the supporting web app,
 admin panel, and background tooling.
 
 ## Architecture Overview

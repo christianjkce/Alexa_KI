@@ -16,7 +16,7 @@
 - Docker Setup (App, Postgres, Caddy)
 - Täglicher Log-Report mit Handlungsempfehlungen
 
-Backend und Web-App fuer den Alexa Skill "K.I.".
+Backend und Web-App fuer den Alexa Skill "KI".
 
 ## Inhalte
 - Alexa Skill Endpoint (Node.js)

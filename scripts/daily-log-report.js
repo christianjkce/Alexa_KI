@@ -39,7 +39,7 @@ const loadEnv = (filePath) => {
 
 const run = (cmd) => {
   try {
-    return execSync(cmd, { encoding: "utf8" });
+    return execSync(cmd, { encoding: "utf8", cwd: ROOT });
   } catch (err) {
     return `COMMAND FAILED: ${cmd}\n${err.message}\n`;
   }
@@ -47,12 +47,45 @@ const run = (cmd) => {
 
 const collectLogs = () => {
   const sections = [];
+  const composeBase = `docker compose -f ${path.join(ROOT, "docker-compose.yml")} --project-directory ${ROOT}`;
+  const dockerBin = "/usr/bin/docker";
   sections.push("## docker logs: app (last 24h)");
-  sections.push(run("docker compose logs --since=24h app"));
-  sections.push(run("docker logs --since=24h ubuntu-app-1"));
+  sections.push(run(`${composeBase} logs --since=24h app`));
+  sections.push(run(`${dockerBin} logs --since=24h ubuntu-app-1`));
   sections.push("\n## docker logs: db (last 24h)");
-  sections.push(run("docker compose logs --since=24h db"));
-  sections.push(run("docker logs --since=24h ubuntu-db-1"));
+  sections.push(run(`${composeBase} logs --since=24h db`));
+  sections.push(run(`${dockerBin} logs --since=24h ubuntu-db-1`));
+  return sections.join("\n");
+};
+
+const runPsql = (sql, env) => {
+  const dockerBin = "/usr/bin/docker";
+  const dbUser = env.POSTGRES_USER || "postgres";
+  const dbName = env.POSTGRES_DB || "app";
+  const cmd = `${dockerBin} exec -u postgres ubuntu-db-1 psql -U ${dbUser} -d ${dbName} -t -A -c ${JSON.stringify(sql)}`;
+  return run(cmd);
+};
+
+const collectEventLogSummary = (env) => {
+  const sections = [];
+  sections.push("\n## eventlog summary (last 24h)");
+  const total = runPsql(
+    "select count(*) from conversation_events where event_ts >= now() - interval '24 hours'"
+  , env).trim();
+  const errorTotal = runPsql(
+    "select count(*) from conversation_events where event_ts >= now() - interval '24 hours' and event_type in ('llm_error','llm_timeout','conversation_timeout','auth_invalid','link_required')"
+  , env).trim();
+  const byType = runPsql(
+    "select event_type || ':' || count(*) from conversation_events where event_ts >= now() - interval '24 hours' group by event_type order by count(*) desc limit 10"
+  , env);
+  const recentErrors = runPsql(
+    "select to_char(event_ts, 'YYYY-MM-DD HH24:MI:SS') || '|' || event_type || '|' || coalesce(payload::text,'') from conversation_events where event_ts >= now() - interval '24 hours' and event_type in ('llm_error','llm_timeout','conversation_timeout','auth_invalid','link_required') order by event_ts desc limit 20"
+  , env);
+  sections.push(`Eventlog totals: total=${total || "n/a"} errors=${errorTotal || "n/a"}`);
+  sections.push("Top event types:");
+  sections.push(byType.trim() || "(no events)");
+  sections.push("Recent error events:");
+  sections.push(recentErrors.trim() || "(no error events)");
   return sections.join("\n");
 };
 
@@ -67,7 +100,7 @@ const extractRequestId = (line) => {
 
 const normalizeLine = (line) => line.replace(/\s+/g, " ").trim();
 
-const analyzeLogs = (logText) => {
+const analyzeLogs = (logText, eventStats = null) => {
   const lines = logText.split(/\r?\n/);
   const errorLines = lines
     .filter((line) => {
@@ -149,6 +182,11 @@ const analyzeLogs = (logText) => {
   if (buckets.conversationTimeout.length) {
     recommendations.add(
       `Conversation timeouts (${buckets.conversationTimeout.length}): ensure pending-response flow is triggered early and LLM timeouts stay below Alexa limits.`
+    );
+  }
+  if (eventStats?.errorTotal > 0) {
+    recommendations.add(
+      `Eventlog errors (${eventStats.errorTotal}): review recent event payloads and correlate with user reports; check LLM provider timeouts and auth/linking flows.`
     );
   }
   if (otherErrors.length) {
@@ -298,7 +336,18 @@ const main = async () => {
   ensureDir(LOG_DIR);
   const env = loadEnv(ENV_PATH);
   const rawLogs = collectLogs();
-  const analysis = analyzeLogs(rawLogs);
+  const totalEventsRaw = runPsql(
+    "select count(*) from conversation_events where event_ts >= now() - interval '24 hours'"
+  , env).trim();
+  const errorEventsRaw = runPsql(
+    "select count(*) from conversation_events where event_ts >= now() - interval '24 hours' and event_type in ('llm_error','llm_timeout','conversation_timeout','auth_invalid','link_required')"
+  , env).trim();
+  const eventStats = {
+    total: Number(totalEventsRaw) || 0,
+    errorTotal: Number(errorEventsRaw) || 0,
+  };
+  const eventSummary = collectEventLogSummary(env);
+  const analysis = analyzeLogs(rawLogs, eventStats);
 
   const report = [
     `Daily Error Report ${TODAY.toISOString()}`,
@@ -306,6 +355,8 @@ const main = async () => {
     `Detected error lines: ${analysis.errorCount}`,
     `User-facing errors (Alexa request IDs): ${analysis.userErrors.length}`,
     `Background/test errors: ${analysis.backgroundErrors.length}`,
+    "",
+    eventSummary,
     "",
     "Errors by category:",
     summarizeBucketCounts(analysis.buckets),
@@ -342,7 +393,7 @@ const main = async () => {
     smtpPass: env.SMTP_PASS,
     smtpFrom: env.SMTP_FROM || env.SMTP_USER,
     to: "info@jkce.de",
-    subject: `K.I. Daily Log Report ${TODAY.toISOString().slice(0, 10)}`,
+    subject: `KI Daily Log Report ${TODAY.toISOString().slice(0, 10)}`,
     text: report,
   });
 
