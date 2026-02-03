@@ -72,6 +72,8 @@ Writes to `logs/daily-log-report-YYYYMMDD.txt` and emails summary.
 
 ## Release Checklist
 - Update `.env` (secrets) on server
+- Run security scan (as root): `sudo /home/ubuntu/scripts/security_check.sh`
+- Resolve any findings before changing repo visibility or deploying
 - `docker compose up -d --build`
 - Smoke test: Alexa invocation, account linking, weather/news, admin login
 
@@ -85,9 +87,9 @@ Writes to `logs/daily-log-report-YYYYMMDD.txt` and emails summary.
 - Tokens nur lokal speichern (`.env`), niemals in Git.
 - GitHub PATs nur mit minimalen Rechten und kurzer Laufzeit verwenden.
 
-## Pre-Commit Secret Check
-Vor jedem Push einen lokalen Scan ausfuehren:
+## Pre-Publish Security Check
+Vor jeder Veroeffentlichung (z. B. Repo auf "public" stellen) lokal ausfuehren:
 ```bash
-./scripts/secret-scan.sh
+sudo /home/ubuntu/scripts/security_check.sh
 ```
 Der Scan blockiert keine Commits, gibt aber klare Hinweise bei Funden.

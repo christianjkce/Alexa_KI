@@ -119,6 +119,10 @@ const config = {
   promptImproverDecisionTimeoutMs:
     Number(process.env.PROMPT_IMPROVER_DECISION_TIMEOUT_MS) || 400,
   promptImproverTemperature: Number(process.env.PROMPT_IMPROVER_TEMPERATURE) || 0.2,
+  googleClientId: process.env.GOOGLE_CLIENT_ID || "",
+  googleClientSecret: process.env.GOOGLE_CLIENT_SECRET || "",
+  googleRedirectUri: process.env.GOOGLE_REDIRECT_URI || "",
+  googleTokenSecret: process.env.GOOGLE_TOKEN_SECRET || "",
   perplexityApiKey: process.env.PERPLEXITY_API_KEY || "",
   perplexityApiBase: process.env.PERPLEXITY_API_BASE || "https://api.perplexity.ai",
   perplexityModel: process.env.PERPLEXITY_MODEL || "sonar",
@@ -144,6 +148,9 @@ const config = {
   dbPass: process.env.POSTGRES_PASSWORD || "",
 };
 
+const getInteractiveTimeout = () =>
+  Math.max(2500, Math.min(3500, config.straicoInteractiveTimeoutMs));
+
 const VERIFY_LINK_TTL_MS = 3 * 24 * 60 * 60 * 1000;
 const VERIFY_LINK_TTL_TEXT = "3 Tage";
 
@@ -161,6 +168,88 @@ for (const [token, payload] of Object.entries(preloadAccess)) {
     accessTokens.set(token, payload);
   }
 }
+
+const getGoogleTokenKey = () => {
+  if (!config.googleTokenSecret) return null;
+  return crypto.createHash("sha256").update(config.googleTokenSecret).digest();
+};
+
+const encryptToken = (value) => {
+  if (!value) return null;
+  const key = getGoogleTokenKey();
+  if (!key) {
+    return { alg: "plain", value };
+  }
+  const iv = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv("aes-256-gcm", key, iv);
+  const encrypted = Buffer.concat([cipher.update(value, "utf8"), cipher.final()]);
+  const tag = cipher.getAuthTag();
+  return {
+    alg: "aes-256-gcm",
+    iv: iv.toString("base64"),
+    tag: tag.toString("base64"),
+    data: encrypted.toString("base64"),
+  };
+};
+
+const decryptToken = (payload) => {
+  if (!payload) return "";
+  if (payload.alg === "plain") return payload.value || "";
+  if (payload.alg !== "aes-256-gcm") return "";
+  const key = getGoogleTokenKey();
+  if (!key) return "";
+  try {
+    const iv = Buffer.from(payload.iv || "", "base64");
+    const tag = Buffer.from(payload.tag || "", "base64");
+    const data = Buffer.from(payload.data || "", "base64");
+    const decipher = crypto.createDecipheriv("aes-256-gcm", key, iv);
+    decipher.setAuthTag(tag);
+    const decrypted = Buffer.concat([decipher.update(data), decipher.final()]);
+    return decrypted.toString("utf8");
+  } catch {
+    return "";
+  }
+};
+
+const createSignedState = (data, ttlMs = 10 * 60 * 1000) => {
+  const payload = {
+    ...data,
+    exp: Date.now() + ttlMs,
+    nonce: crypto.randomBytes(12).toString("hex"),
+  };
+  const body = Buffer.from(JSON.stringify(payload)).toString("base64url");
+  const sig = crypto
+    .createHmac("sha256", config.sessionSecret)
+    .update(body)
+    .digest("base64url");
+  return `${body}.${sig}`;
+};
+
+const verifySignedState = (state) => {
+  if (!state) return null;
+  const [body, sig] = state.split(".");
+  if (!body || !sig) return null;
+  const expected = crypto
+    .createHmac("sha256", config.sessionSecret)
+    .update(body)
+    .digest("base64url");
+  if (expected !== sig) return null;
+  try {
+    const payload = JSON.parse(Buffer.from(body, "base64url").toString("utf8"));
+    if (!payload?.exp || payload.exp < Date.now()) return null;
+    return payload;
+  } catch {
+    return null;
+  }
+};
+
+const getGoogleScopes = () => [
+  "openid",
+  "email",
+  "https://www.googleapis.com/auth/gmail.modify",
+  "https://www.googleapis.com/auth/calendar",
+  "https://www.googleapis.com/auth/tasks",
+];
 
 const initEventLog = async () => {
   if (dbPool) return;
@@ -188,6 +277,18 @@ const initEventLog = async () => {
         account_user_id text,
         event_type text not null,
         payload jsonb
+      )`
+    );
+    await pool.query(
+      `create table if not exists google_oauth_tokens (
+        account_user_id text primary key,
+        access_token jsonb,
+        refresh_token jsonb,
+        expires_at bigint,
+        scopes text[],
+        email text,
+        linked_at timestamptz,
+        updated_at timestamptz not null default now()
       )`
     );
     dbPool = pool;
@@ -730,6 +831,10 @@ const updateEnvFile = (updates) => {
     "QA_USER_USERNAME",
     "QA_USER_EMAIL",
     "QA_USER_PASSWORD",
+    "GOOGLE_CLIENT_ID",
+    "GOOGLE_CLIENT_SECRET",
+    "GOOGLE_REDIRECT_URI",
+    "GOOGLE_TOKEN_SECRET",
     "ALEXA_TIMEOUT_BUFFER_MS",
     "ALEXA_PREEMPT_MS",
     "PENDING_RESPONSE_BG_TIMEOUT_MS",
@@ -1196,6 +1301,411 @@ const perplexityChatCompletion = async ({ messages, maxTokens, timeoutMs }) => {
   });
 };
 
+const googleTokenRequest = async (params) => {
+  if (!config.googleClientId || !config.googleClientSecret || !config.googleRedirectUri) {
+    return { ok: false, status: 400, json: { error: "google_oauth_not_configured" } };
+  }
+  const form = new URLSearchParams(params).toString();
+  return new Promise((resolve) => {
+    const req = https.request(
+      {
+        method: "POST",
+        hostname: "oauth2.googleapis.com",
+        path: "/token",
+        port: 443,
+        headers: {
+          "content-type": "application/x-www-form-urlencoded",
+          "content-length": Buffer.byteLength(form),
+        },
+        timeout: 4000,
+      },
+      (res) => {
+        const chunks = [];
+        res.on("data", (d) => chunks.push(d));
+        res.on("end", () => {
+          const body = Buffer.concat(chunks).toString("utf8");
+          let parsed = null;
+          try {
+            parsed = JSON.parse(body);
+          } catch {
+            parsed = { error: "invalid_json", body };
+          }
+          const ok = res.statusCode >= 200 && res.statusCode < 300;
+          return resolve({ ok, status: res.statusCode, json: parsed });
+        });
+      }
+    );
+    req.on("error", (err) =>
+      resolve({ ok: false, status: 500, json: { error: "request_failed", detail: err.message } })
+    );
+    req.on("timeout", () => req.destroy(new Error("timeout")));
+    req.write(form);
+    req.end();
+  });
+};
+
+const googleFetchUserInfo = async (accessToken) => {
+  if (!accessToken) {
+    return { ok: false, status: 401, json: { error: "missing_access_token" } };
+  }
+  return getJson("https://www.googleapis.com/oauth2/v3/userinfo", 2500, {
+    authorization: `Bearer ${accessToken}`,
+  });
+};
+
+const googleApiRequest = async ({ method = "GET", path, accessToken, body }) => {
+  if (!accessToken) {
+    return { ok: false, status: 401, json: { error: "missing_access_token" } };
+  }
+  const payload = body ? JSON.stringify(body) : "";
+  return new Promise((resolve) => {
+    const req = https.request(
+      {
+        method,
+        hostname: "www.googleapis.com",
+        path,
+        port: 443,
+        headers: {
+          authorization: `Bearer ${accessToken}`,
+          "content-type": "application/json",
+          ...(payload ? { "content-length": Buffer.byteLength(payload) } : {}),
+        },
+        timeout: 5000,
+      },
+      (res) => {
+        const chunks = [];
+        res.on("data", (d) => chunks.push(d));
+        res.on("end", () => {
+          const raw = Buffer.concat(chunks).toString("utf8");
+          let parsed = null;
+          try {
+            parsed = JSON.parse(raw);
+          } catch {
+            parsed = { raw };
+          }
+          const ok = res.statusCode >= 200 && res.statusCode < 300;
+          resolve({ ok, status: res.statusCode, json: parsed });
+        });
+      }
+    );
+    req.on("error", (err) =>
+      resolve({ ok: false, status: 500, json: { error: "request_failed", detail: err.message } })
+    );
+    req.on("timeout", () => req.destroy(new Error("timeout")));
+    if (payload) req.write(payload);
+    req.end();
+  });
+};
+
+const googleListCalendars = async (accessToken) =>
+  googleApiRequest({ method: "GET", path: "/calendar/v3/users/me/calendarList?maxResults=10", accessToken });
+
+const googleListTasks = async (accessToken) =>
+  googleApiRequest({ method: "GET", path: "/tasks/v1/users/@me/lists", accessToken });
+
+const googleListGmailLabels = async (accessToken) =>
+  googleApiRequest({ method: "GET", path: "/gmail/v1/users/me/labels", accessToken });
+
+const googleListTasksInList = async (accessToken, listId) =>
+  googleApiRequest({
+    method: "GET",
+    path: `/tasks/v1/lists/${encodeURIComponent(listId)}/tasks?maxResults=5`,
+    accessToken,
+  });
+
+const googleCreateTask = async (accessToken, listId, title) =>
+  googleApiRequest({
+    method: "POST",
+    path: `/tasks/v1/lists/${encodeURIComponent(listId)}/tasks`,
+    accessToken,
+    body: { title },
+  });
+
+const googleListUpcomingEvents = async (accessToken) => {
+  const timeMin = new Date().toISOString();
+  const params = new URLSearchParams({
+    timeMin,
+    maxResults: "5",
+    orderBy: "startTime",
+    singleEvents: "true",
+  });
+  return googleApiRequest({
+    method: "GET",
+    path: `/calendar/v3/calendars/primary/events?${params.toString()}`,
+    accessToken,
+  });
+};
+
+const googleListUnreadMessages = async (accessToken) =>
+  googleApiRequest({
+    method: "GET",
+    path: "/gmail/v1/users/me/messages?q=is:unread&maxResults=5",
+    accessToken,
+  });
+
+const googleCreateCalendarEvent = async (accessToken, { title, startDateTime, endDateTime }) =>
+  googleApiRequest({
+    method: "POST",
+    path: "/calendar/v3/calendars/primary/events",
+    accessToken,
+    body: {
+      summary: title,
+      start: { dateTime: startDateTime, timeZone: "Europe/Berlin" },
+      end: { dateTime: endDateTime, timeZone: "Europe/Berlin" },
+    },
+  });
+
+const getBerlinDateParts = (date = new Date()) => {
+  const formatter = new Intl.DateTimeFormat("de-DE", {
+    timeZone: "Europe/Berlin",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  });
+  const parts = formatter.formatToParts(date);
+  const map = {};
+  for (const part of parts) {
+    if (part.type !== "literal") map[part.type] = part.value;
+  }
+  return {
+    year: Number(map.year),
+    month: Number(map.month),
+    day: Number(map.day),
+  };
+};
+
+const addDaysToParts = (parts, days) => {
+  const base = Date.UTC(parts.year, parts.month - 1, parts.day);
+  const next = new Date(base + days * 24 * 60 * 60 * 1000);
+  return {
+    year: next.getUTCFullYear(),
+    month: next.getUTCMonth() + 1,
+    day: next.getUTCDate(),
+  };
+};
+
+const parseDateFromText = (text) => {
+  const lower = text.toLowerCase();
+  if (lower.includes("morgen")) {
+    return addDaysToParts(getBerlinDateParts(), 1);
+  }
+  if (lower.includes("heute")) {
+    return getBerlinDateParts();
+  }
+  const matchFull = lower.match(/(\d{1,2})\\.(\d{1,2})\\.(\d{4})/);
+  if (matchFull) {
+    return {
+      day: Number(matchFull[1]),
+      month: Number(matchFull[2]),
+      year: Number(matchFull[3]),
+    };
+  }
+  const matchShort = lower.match(/(\d{1,2})\\.(\d{1,2})(?!\\.)/);
+  if (matchShort) {
+    const now = getBerlinDateParts();
+    return {
+      day: Number(matchShort[1]),
+      month: Number(matchShort[2]),
+      year: now.year,
+    };
+  }
+  return null;
+};
+
+const parseTimeFromText = (text) => {
+  const lower = text.toLowerCase();
+  const matchTime = lower.match(/(\\d{1,2})[:.](\\d{2})/);
+  if (matchTime) {
+    return { hour: Number(matchTime[1]), minute: Number(matchTime[2]) };
+  }
+  const matchHour = lower.match(/(\\d{1,2})\\s*uhr(?:\\s*(\\d{2}))?/);
+  if (matchHour) {
+    return { hour: Number(matchHour[1]), minute: Number(matchHour[2] || 0) };
+  }
+  return null;
+};
+
+const formatDateTime = (dateParts, timeParts) => {
+  const yyyy = String(dateParts.year).padStart(4, "0");
+  const mm = String(dateParts.month).padStart(2, "0");
+  const dd = String(dateParts.day).padStart(2, "0");
+  const hh = String(timeParts.hour).padStart(2, "0");
+  const min = String(timeParts.minute).padStart(2, "0");
+  return `${yyyy}-${mm}-${dd}T${hh}:${min}:00`;
+};
+
+const extractEventTitle = (text) => {
+  const lower = String(text || "").trim();
+  const match =
+    lower.match(/termin(?:\\s+eintragen|\\s+anlegen|\\s+erstellen)?\\s*(.*)/i) ||
+    lower.match(/meeting\\s*(.*)/i) ||
+    lower.match(/event\\s*(.*)/i);
+  if (match && match[1]) {
+    const cleaned = match[1]
+      .replace(/\\bam\\b.*/i, "")
+      .replace(/\\bum\\b.*/i, "")
+      .trim();
+    return cleaned;
+  }
+  const verbMatch = lower.match(
+    /(trage|trag|lege|erstelle|plane|setze)\\s+(?:den\\s+)?(?:termin\\s+)?(.+)/i
+  );
+  if (verbMatch && verbMatch[2]) {
+    const cleaned = verbMatch[2]
+      .replace(/\\b(am|um|uhr|morgen|heute|uebermorgen|naechste|nächste)\\b.*/i, "")
+      .replace(/\\bkalender\\b.*/i, "")
+      .replace(/\\bein\\b$/i, "")
+      .trim();
+    return cleaned;
+  }
+  const tokens = lower
+    .split(/\\s+/)
+    .filter(Boolean)
+    .filter(
+      (t) =>
+        ![
+          "trage",
+          "trag",
+          "lege",
+          "erstelle",
+          "plane",
+          "setze",
+          "termin",
+          "ein",
+          "eintragen",
+          "anlegen",
+          "erstellen",
+          "kalender",
+          "am",
+          "um",
+          "uhr",
+          "morgen",
+          "heute",
+          "uebermorgen",
+        ].includes(t)
+    );
+  return tokens.join(" ").trim();
+};
+
+const parseTaskTitle = (text) => {
+  const raw = String(text || "").trim();
+  const match =
+    raw.match(/erinner(?:e|) mich an (.+)/i) ||
+    raw.match(/lege (?:eine )?aufgabe an(?: fuer)? (.+)/i) ||
+    raw.match(/erstelle (?:eine )?aufgabe(?: fuer)? (.+)/i) ||
+    raw.match(/neue (?:task|aufgabe) (.+)/i);
+  if (match && match[1]) return match[1].trim();
+  return "";
+};
+
+const handleGoogleTaskUtterance = async (utterance, accountUserId) => {
+  const access = await getGoogleAccessToken(accountUserId);
+  if (!access.ok) {
+    return { ok: false, error: access.error || "google_token_missing" };
+  }
+  const normalized = normalizeCommand(utterance);
+  const wantsCalendar = hasAnyToken(normalized, ["kalender", "termin", "termine"]);
+  const wantsCreateCalendar = wantsCalendar && hasAnyToken(normalized, ["eintragen", "anlegen", "erstellen"]);
+  const wantsGmail = hasAnyToken(normalized, ["mail", "email", "posteingang", "gmail"]);
+  const wantsTasks = hasAnyToken(normalized, ["aufgabe", "aufgaben", "task", "todo"]);
+  const createTitle = parseTaskTitle(utterance);
+
+  if (wantsCreateCalendar) {
+    return {
+      ok: true,
+      speech:
+        "Termine kann ich aktuell nur auslesen. Sag zum Beispiel: Welche Termine habe ich? Oder erstelle eine Aufgabe.",
+    };
+  }
+
+  if (wantsCalendar) {
+    const events = await googleListUpcomingEvents(access.accessToken);
+    if (!events.ok) {
+      console.warn("Google calendar list failed", {
+        status: events.status,
+        error: events.json?.error,
+      });
+      return { ok: false, error: "calendar_failed" };
+    }
+    const items = Array.isArray(events.json?.items) ? events.json.items : [];
+    if (!items.length) {
+      return { ok: true, speech: "Ich sehe aktuell keine anstehenden Termine im Kalender." };
+    }
+    const first = items[0];
+    const summary = first.summary || "Termin";
+    const start = first.start?.dateTime || first.start?.date || "";
+    const when = start ? `am ${start.slice(0, 10)}` : "";
+    return { ok: true, speech: `Der naechste Termin ist ${summary} ${when}.` };
+  }
+
+  if (wantsGmail) {
+    const unread = await googleListUnreadMessages(access.accessToken);
+    if (!unread.ok) {
+      console.warn("Google gmail list failed", {
+        status: unread.status,
+        error: unread.json?.error,
+      });
+      return { ok: false, error: "gmail_failed" };
+    }
+    const count = Array.isArray(unread.json?.messages) ? unread.json.messages.length : 0;
+    return {
+      ok: true,
+      speech: count
+        ? `Du hast ${count} ungelesene E-Mails.`
+        : "Du hast aktuell keine ungelesenen E-Mails.",
+    };
+  }
+
+  if (wantsTasks || createTitle) {
+    const lists = await googleListTasks(access.accessToken);
+    if (!lists.ok) {
+      console.warn("Google task lists failed", {
+        status: lists.status,
+        error: lists.json?.error,
+      });
+      return { ok: false, error: "tasks_list_failed" };
+    }
+    const listItems = Array.isArray(lists.json?.items) ? lists.json.items : [];
+    if (!listItems.length) {
+      return { ok: false, error: "no_task_lists" };
+    }
+    const listId = listItems[0].id;
+    if (createTitle) {
+      const created = await googleCreateTask(access.accessToken, listId, createTitle);
+      if (!created.ok) {
+        console.warn("Google task create failed", {
+          status: created.status,
+          error: created.json?.error,
+        });
+        return { ok: false, error: "task_create_failed" };
+      }
+      return { ok: true, speech: `Alles klar, ich habe die Aufgabe "${createTitle}" angelegt.` };
+    }
+    const tasks = await googleListTasksInList(access.accessToken, listId);
+    if (!tasks.ok) {
+      console.warn("Google task list failed", {
+        status: tasks.status,
+        error: tasks.json?.error,
+      });
+      return { ok: false, error: "task_list_failed" };
+    }
+    const items = Array.isArray(tasks.json?.items) ? tasks.json.items : [];
+    if (!items.length) {
+      return { ok: true, speech: "Deine Aufgabenliste ist aktuell leer." };
+    }
+    const titles = items
+      .slice(0, 3)
+      .map((item) => item.title)
+      .filter(Boolean);
+    if (!titles.length) {
+      return { ok: true, speech: "Ich habe Aufgaben gefunden, aber keine Titel erhalten." };
+    }
+    return { ok: true, speech: `Deine naechsten Aufgaben sind: ${titles.join(", ")}.` };
+  }
+
+  return { ok: false, error: "no_task_match" };
+};
+
 const extractPerplexityText = (json) => {
   const raw =
     json?.choices?.[0]?.message?.content ||
@@ -1464,7 +1974,7 @@ const parseBasicAuth = (header) => {
   return { id, secret };
 };
 
-const getJson = async (urlString, timeoutMs) => {
+const getJson = async (urlString, timeoutMs, headers = {}) => {
   return new Promise((resolve) => {
     const url = new URL(urlString);
     const req = https.request(
@@ -1474,6 +1984,7 @@ const getJson = async (urlString, timeoutMs) => {
         path: `${url.pathname}${url.search}`,
         port: url.port || 443,
         timeout: timeoutMs || 2500,
+        headers,
       },
       (res) => {
         const chunks = [];
@@ -1526,6 +2037,136 @@ const savePreferredLocation = (accountUserId, location) => {
   if (!user) return;
   if (user.preferredLocation) return;
   userStore.updateUser(accountUserId, { preferredLocation: location });
+};
+
+const getGoogleProfile = (accountUserId) => {
+  if (!accountUserId) return null;
+  const user = userStore.getUser(accountUserId);
+  return user?.google || null;
+};
+
+const saveGoogleProfile = (accountUserId, profile) => {
+  if (!accountUserId) return false;
+  const user = userStore.getUser(accountUserId);
+  if (!user) return false;
+  userStore.updateUser(accountUserId, { google: profile });
+  return true;
+};
+
+const clearGoogleProfile = (accountUserId) => {
+  if (!accountUserId) return false;
+  const user = userStore.getUser(accountUserId);
+  if (!user) return false;
+  userStore.updateUser(accountUserId, { google: null });
+  return true;
+};
+
+const getGoogleTokenRow = async (accountUserId) => {
+  if (!dbPool || !accountUserId) return null;
+  try {
+    const result = await dbPool.query(
+      "select account_user_id, access_token, refresh_token, expires_at, scopes, email, linked_at from google_oauth_tokens where account_user_id = $1",
+      [accountUserId]
+    );
+    return result.rows?.[0] || null;
+  } catch (err) {
+    console.warn("Google token fetch failed", { user: accountUserId, error: err.message });
+    return null;
+  }
+};
+
+const saveGoogleTokenRow = async (accountUserId, payload) => {
+  if (!dbPool || !accountUserId) return false;
+  try {
+    await dbPool.query(
+      `insert into google_oauth_tokens
+        (account_user_id, access_token, refresh_token, expires_at, scopes, email, linked_at, updated_at)
+       values ($1,$2,$3,$4,$5,$6,$7, now())
+       on conflict (account_user_id) do update set
+         access_token = excluded.access_token,
+         refresh_token = excluded.refresh_token,
+         expires_at = excluded.expires_at,
+         scopes = excluded.scopes,
+         email = excluded.email,
+         linked_at = excluded.linked_at,
+         updated_at = now()`,
+      [
+        accountUserId,
+        payload.accessToken || null,
+        payload.refreshToken || null,
+        payload.expiresAt || null,
+        payload.scopes || null,
+        payload.email || null,
+        payload.linkedAt || null,
+      ]
+    );
+    return true;
+  } catch (err) {
+    console.warn("Google token save failed", { user: accountUserId, error: err.message });
+    return false;
+  }
+};
+
+const deleteGoogleTokenRow = async (accountUserId) => {
+  if (!dbPool || !accountUserId) return false;
+  try {
+    await dbPool.query("delete from google_oauth_tokens where account_user_id = $1", [accountUserId]);
+    return true;
+  } catch (err) {
+    console.warn("Google token delete failed", { user: accountUserId, error: err.message });
+    return false;
+  }
+};
+
+const getGoogleAccessToken = async (accountUserId) => {
+  const row = await getGoogleTokenRow(accountUserId);
+  if (!row) {
+    console.warn("Google token missing in DB", { user: accountUserId });
+    return { ok: false, error: "missing_google_link" };
+  }
+  const accessToken = decryptToken(row.access_token);
+  const refreshToken = decryptToken(row.refresh_token);
+  const expiresAt = Number(row.expires_at || 0);
+  if (accessToken && (!expiresAt || expiresAt > Date.now() + 30 * 1000)) {
+    return { ok: true, accessToken, scopes: row.scopes || [] };
+  }
+  if (!refreshToken) {
+    return { ok: false, error: "missing_refresh_token" };
+  }
+  const refreshResult = await googleTokenRequest({
+    client_id: config.googleClientId,
+    client_secret: config.googleClientSecret,
+    refresh_token: refreshToken,
+    grant_type: "refresh_token",
+  });
+  if (!refreshResult.ok) {
+    console.warn("Google token refresh failed", {
+      user: accountUserId,
+      status: refreshResult.status,
+      error: refreshResult.json?.error || null,
+    });
+    await saveGoogleTokenRow(accountUserId, {
+      accessToken: row.access_token,
+      refreshToken: row.refresh_token,
+      expiresAt,
+      scopes: row.scopes || [],
+      email: row.email || "",
+      linkedAt: row.linked_at || null,
+    });
+    return { ok: false, error: "refresh_failed" };
+  }
+  const newAccessToken = refreshResult.json?.access_token || "";
+  const newExpiresIn = Number(refreshResult.json?.expires_in || 0);
+  const newExpiresAt = newExpiresIn ? Date.now() + newExpiresIn * 1000 : Date.now() + 300000;
+  await saveGoogleTokenRow(accountUserId, {
+    accessToken: encryptToken(newAccessToken),
+    refreshToken: row.refresh_token || null,
+    expiresAt: newExpiresAt,
+    scopes: row.scopes || [],
+    email: row.email || "",
+    linkedAt: row.linked_at || null,
+  });
+  return { ok: true, accessToken: newAccessToken, scopes: row.scopes || [] };
 };
 
 const getWeatherForLocation = async (location, options = {}) => {
@@ -1874,7 +2515,7 @@ const renderLanding = (message = "") => {
           <div class=\"step\">
             <span>Schritt 3</span>
             <h3>Lossprechen</h3>
-            <p class=\"lead\">Sag einfach KI oder meinen Namen Klara. KI fuehrt dich durch das Gespraech.</p>
+            <p class=\"lead\">Sag einfach KI, dann stelle deine Frage. KI fuehrt dich durch das Gespraech.</p>
           </div>
         </div>
       </div>
@@ -2175,6 +2816,14 @@ const renderUserDashboard = (userId, message = "") => {
   const record = userStore.getUser(userId) || {};
   const linkedAt = record.alexaLinkedAt ? new Date(record.alexaLinkedAt) : null;
   const linkStatus = linkedAt ? `verbunden seit ${linkedAt.toLocaleDateString("de-DE")}` : "nicht verbunden";
+  const googleProfile = record.google || null;
+  const googleLinkedAt = googleProfile?.linkedAt ? new Date(googleProfile.linkedAt) : null;
+  const googleStatus = googleLinkedAt
+    ? `verbunden seit ${googleLinkedAt.toLocaleDateString("de-DE")}`
+    : "nicht verbunden";
+  const googleScopes = Array.isArray(googleProfile?.scopes)
+    ? googleProfile.scopes.join(", ")
+    : "";
   const usageYear = String(new Date().getFullYear());
   const usage = record.usage?.[usageYear] || { requests: 0 };
   const requestCount = Number(usage.requests || 0);
@@ -2228,6 +2877,33 @@ const renderUserDashboard = (userId, message = "") => {
     <section class="card" style="margin-top: 16px">
       <h2 class="section-title">Nutzung (${usageYear})</h2>
       <p class="lead">Requests: ${requestCount}</p>
+    </section>
+
+    <section class="card" style="margin-top: 16px">
+      <h2 class="section-title">Google-Verknuepfung</h2>
+      <p class="lead">Status: ${googleStatus}</p>
+      ${
+        googleProfile?.email
+          ? `<p class="lead">Google-Konto: ${escapeHtml(googleProfile.email)}</p>`
+          : ""
+      }
+      ${
+        googleScopes
+          ? `<p class="lead">Freigegebene Bereiche: ${escapeHtml(googleScopes)}</p>`
+          : ""
+      }
+      <p class="lead">Diese Verknuepfung steuerst du hier in deinem Konto.</p>
+      <div class="actions">
+        ${
+          googleLinkedAt
+            ? `<form method="POST" action="/account/google/unlink">
+                <button class="btn secondary" type="submit">Google trennen</button>
+              </form>`
+            : `<form method="POST" action="/account/google/connect">
+                <button class="btn" type="submit">Google verbinden</button>
+              </form>`
+        }
+      </div>
     </section>
 
     <section class="card" style="margin-top: 16px">
@@ -2880,6 +3556,20 @@ const renderAdmin = (userId, message = "", events = [], eventMeta = {}) => {
     </div>
 
     <div class="card">
+      <h2>Google OAuth</h2>
+      <form method="POST" action="/admin/env">
+        <div class="grid">
+          <label>Client ID<input name="GOOGLE_CLIENT_ID" value="${escapeHtml(envValue("GOOGLE_CLIENT_ID", config.googleClientId))}" /></label>
+          <label>Client Secret<input name="GOOGLE_CLIENT_SECRET" value="${escapeHtml(envValue("GOOGLE_CLIENT_SECRET", config.googleClientSecret))}" /></label>
+          <label>Redirect URI<input name="GOOGLE_REDIRECT_URI" value="${escapeHtml(envValue("GOOGLE_REDIRECT_URI", config.googleRedirectUri))}" /></label>
+          <label>Token Secret<input name="GOOGLE_TOKEN_SECRET" value="${escapeHtml(envValue("GOOGLE_TOKEN_SECRET", config.googleTokenSecret))}" /></label>
+        </div>
+        <p class="muted">Token Secret dient zur lokalen Verschluesselung der Google-Tokens.</p>
+        <button type="submit">Speichern</button>
+      </form>
+    </div>
+
+    <div class="card">
       <h2>QA Nutzer</h2>
       <form method="POST" action="/admin/env">
         <div class="grid">
@@ -3509,13 +4199,16 @@ const handleToken = async (req, res) => {
     const refreshToken = body?.refresh_token || "";
     const stored = refreshTokens.get(refreshToken) || tokenStore.getRefreshToken(refreshToken);
     if (!stored) {
-      console.warn("Token invalid_grant: refresh not found");
+      console.warn("Token invalid_grant: refresh not found", { clientId });
       return sendJson(res, 400, { error: "invalid_grant" }, oauthHeaders);
     }
     if (stored.exp < Date.now()) {
       refreshTokens.delete(refreshToken);
       tokenStore.deleteRefreshToken(refreshToken);
-      console.warn("Token invalid_grant: refresh expired");
+      console.warn("Token invalid_grant: refresh expired", {
+        clientId,
+        userId: stored.userId,
+      });
       return sendJson(
         res,
         400,
@@ -3543,6 +4236,98 @@ const handleToken = async (req, res) => {
   }
 
   return sendJson(res, 400, { error: "unsupported_grant_type" }, oauthHeaders);
+};
+
+const handleGoogleConnect = async (req, res, userId) => {
+  if (!config.googleClientId || !config.googleClientSecret || !config.googleRedirectUri) {
+    return sendHtml(res, 500, renderUserDashboard(userId, "Google ist derzeit nicht konfiguriert."));
+  }
+  if (!config.googleTokenSecret) {
+    return sendHtml(res, 500, renderUserDashboard(userId, "Google-Verknuepfung ist derzeit nicht verfuegbar."));
+  }
+  if (!dbPool) {
+    return sendHtml(res, 500, renderUserDashboard(userId, "Datenbank ist derzeit nicht verfuegbar."));
+  }
+  const state = createSignedState({ userId });
+  const scope = getGoogleScopes().join(" ");
+  const params = new URLSearchParams({
+    client_id: config.googleClientId,
+    redirect_uri: config.googleRedirectUri,
+    response_type: "code",
+    access_type: "offline",
+    prompt: "consent",
+    include_granted_scopes: "true",
+    scope,
+    state,
+  });
+  res.writeHead(302, { Location: `https://accounts.google.com/o/oauth2/v2/auth?${params}` });
+  return res.end();
+};
+
+const handleGoogleCallback = async (req, res, url) => {
+  const code = url.searchParams.get("code") || "";
+  const state = url.searchParams.get("state") || "";
+  const error = url.searchParams.get("error") || "";
+  if (error) {
+    return sendHtml(res, 400, renderLogin("Google-Verknuepfung wurde abgebrochen."));
+  }
+  const payload = verifySignedState(state);
+  if (!payload?.userId) {
+    return sendHtml(res, 400, renderLogin("Google-Verknuepfung ist ungueltig oder abgelaufen."));
+  }
+  const accountUserId = payload.userId;
+  const user = userStore.getUser(accountUserId);
+  if (!user) {
+    return sendHtml(res, 400, renderLogin("Google-Verknuepfung konnte nicht abgeschlossen werden."));
+  }
+  const tokenResult = await googleTokenRequest({
+    client_id: config.googleClientId,
+    client_secret: config.googleClientSecret,
+    code,
+    grant_type: "authorization_code",
+    redirect_uri: config.googleRedirectUri,
+  });
+  if (!tokenResult.ok) {
+    console.error("Google token exchange failed", {
+      status: tokenResult.status,
+      error: tokenResult.json?.error,
+    });
+    return sendHtml(res, 500, renderUserDashboard(accountUserId, "Google-Verknuepfung fehlgeschlagen."));
+  }
+  const accessToken = tokenResult.json?.access_token || "";
+  const refreshToken = tokenResult.json?.refresh_token || "";
+  const expiresIn = Number(tokenResult.json?.expires_in || 0);
+  const scopeText = String(tokenResult.json?.scope || "");
+  const scopes = scopeText ? scopeText.split(/\s+/).filter(Boolean) : getGoogleScopes();
+
+  const userInfo = await googleFetchUserInfo(accessToken);
+  const email = userInfo.ok ? String(userInfo.json?.email || "") : "";
+  const existing = getGoogleProfile(accountUserId) || {};
+  const nowIso = new Date().toISOString();
+  const nextProfile = {
+    linkedAt: existing.linkedAt || nowIso,
+    email: email || existing.email || user.email || "",
+    scopes,
+    expiresAt: expiresIn ? Date.now() + expiresIn * 1000 : existing.expiresAt || 0,
+  };
+  saveGoogleProfile(accountUserId, nextProfile);
+  await saveGoogleTokenRow(accountUserId, {
+    accessToken: encryptToken(accessToken),
+    refreshToken: refreshToken ? encryptToken(refreshToken) : null,
+    expiresAt: nextProfile.expiresAt || 0,
+    scopes,
+    email: nextProfile.email,
+    linkedAt: nextProfile.linkedAt || nowIso,
+  });
+  console.info("Google linked", { user: accountUserId, email: nextProfile.email });
+  res.writeHead(302, { Location: "/account" });
+  return res.end();
+};
+
+const handleGoogleUnlink = async (req, res, userId) => {
+  clearGoogleProfile(userId);
+  await deleteGoogleTokenRow(userId);
+  return sendHtml(res, 200, renderUserDashboard(userId, "Google-Verknuepfung wurde getrennt."));
 };
 
 const certCache = new Map(); // url -> pem
@@ -5594,7 +6379,26 @@ const classifyIntent = (text, history) => {
       "wind",
       "schnee",
     ]) || isTimeQuery(t) || isLiveDataQuery(t),
-    isTask: hasAnyToken(t, ["erinnere", "termin", "kalender", "mail", "todo", "notiz", "plane"]),
+    isTask: hasAnyToken(t, [
+      "erinnere",
+      "termin",
+      "termine",
+      "kalender",
+      "eintrag",
+      "eintragen",
+      "trage",
+      "trag",
+      "aufgabe",
+      "aufgaben",
+      "task",
+      "todo",
+      "notiz",
+      "mail",
+      "email",
+      "posteingang",
+      "gmail",
+      "plane",
+    ]),
     isFact: looksLikeFactQuery(t),
     isExplain: hasAnyToken(t, ["erklaer", "erklär", "was bedeutet", "was ist", "unterschied"]),
     isRecommend: hasAnyToken(t, ["soll ich", "empfiehl", "was wuerdest du", "besser", "empfehlung"]),
@@ -5921,7 +6725,18 @@ const handleChatUtterance = async ({
         responseBudgetMs,
       });
     }
-    speech = "Ich hab dich nicht verstanden. Bitte fange den Satz mit Klara oder bitte an.";
+    void logConversationEvent({
+      userId,
+      accountUserId,
+      eventType: "empty_utterance",
+      payload: {
+        trimmed,
+        fallback,
+        expectingFollowup: wasExpectingFollowup,
+        pendingCalendar: Boolean(sessionAttributes.pendingCalendarCreate),
+      },
+    });
+    speech = "Ich hab dich nicht verstanden. Bitte formuliere deine Frage als Satz.";
     shouldEndSession = false;
     repromptText = "Sag zum Beispiel: erzaehle eine Geschichte.";
     return { speech, shouldEndSession, repromptText, elicitFollowup };
@@ -5953,7 +6768,19 @@ const handleChatUtterance = async ({
   const chatToken = config.xaiApiKey || userAccessToken || null;
   const normalizedUtterance = normalizeAsr(trimmed);
   const scenario = classifyScenario(history, normalizedUtterance);
-  const intentInfo = classifyIntent(normalizedUtterance, history);
+  let intentInfo = classifyIntent(normalizedUtterance, history);
+  if (sessionAttributes.pendingCalendarCreate && intentInfo.intent !== "TASK_TOOL") {
+    intentInfo = { intent: "TASK_TOOL", complexity: intentInfo.complexity };
+    void logConversationEvent({
+      userId,
+      accountUserId,
+      eventType: "task_intent_forced",
+      payload: { reason: "pending_calendar", utterance: trimmed },
+    });
+  }
+  const googleProfile = getGoogleProfile(accountUserId);
+  const googleDbRow = accountUserId ? await getGoogleTokenRow(accountUserId) : null;
+  const hasGoogleLink = Boolean(googleDbRow?.access_token || googleDbRow?.refresh_token);
   const preferredLocation = getPreferredLocation(accountUserId);
   const detectedLocation = extractLocationFromUtterance(trimmed);
   const locationContext = sessionAttributes.lastWeatherLocation || preferredLocation;
@@ -5995,6 +6822,200 @@ const handleChatUtterance = async ({
   }
   if (wantsDetail && straicoMode === "voice_short") {
     straicoMode = "detail";
+  }
+
+  if (intentInfo.intent === "TASK_TOOL" && !hasGoogleLink) {
+    const baseUrl = process.env.APP_BASE_URL || `https://${config.appHost}`;
+    if (googleProfile?.linkedAt) {
+      speech =
+        "Deine Google-Verknuepfung ist abgelaufen. Bitte verbinde dein Google-Konto erneut.";
+      repromptText = `Gehe auf ${baseUrl} und verbinde dein Google-Konto.`;
+      shouldEndSession = false;
+      return { speech, shouldEndSession, repromptText, elicitFollowup };
+    }
+    speech =
+      "Dafuer brauche ich eine Google-Verknuepfung. Du kannst dein Konto in der Benutzerverwaltung verbinden.";
+    repromptText = `Gehe auf ${baseUrl} und verbinde dein Google-Konto.`;
+    shouldEndSession = false;
+    return { speech, shouldEndSession, repromptText, elicitFollowup };
+  }
+  if (intentInfo.intent === "TASK_TOOL" && hasGoogleLink) {
+    const normalizedCommand = normalizeCommand(trimmed);
+    const createVerbs = [
+      "eintragen",
+      "eintrag",
+      "anlegen",
+      "erstellen",
+      "erfassen",
+      "einplanen",
+      "setzen",
+      "buchen",
+      "trage",
+      "trag",
+      "lege",
+      "erstelle",
+      "plane",
+      "setze",
+    ];
+    const listHints = [
+      "naechste",
+      "nächste",
+      "welche",
+      "zeige",
+      "habe ich",
+      "steht an",
+      "liste",
+      "lies",
+      "vorlesen",
+      "vor",
+    ];
+    const mentionsCalendarThing = hasAnyToken(normalizedCommand, [
+      "termin",
+      "termine",
+      "kalender",
+      "kalendereintrag",
+      "eintrag",
+    ]);
+    const hasCreateVerb = hasAnyToken(normalizedCommand, createVerbs);
+    const hasListHint = hasAnyToken(normalizedCommand, listHints);
+    const hasImplicitTime = /\b(am|um|morgen|heute|uebermorgen)\b/i.test(trimmed);
+    const hasDateOrTime = Boolean(parseDateFromText(trimmed)) || Boolean(parseTimeFromText(trimmed));
+    const isListRequest = hasListHint && (mentionsCalendarThing || normalizedCommand.includes("termin"));
+    const pendingCalendar = sessionAttributes.pendingCalendarCreate || null;
+
+    if (pendingCalendar && isListRequest) {
+      delete sessionAttributes.pendingCalendarCreate;
+      sessionAttributes.expectingFollowup = false;
+    }
+
+    const followupIsCalendar =
+      hasAnyToken(normalizedCommand, ["termin", "termine", "kalender", "titel", "heisst", "name"]) ||
+      hasAnyToken(normalizedCommand, createVerbs) ||
+      hasDateOrTime;
+
+    if (pendingCalendar && !followupIsCalendar) {
+      delete sessionAttributes.pendingCalendarCreate;
+      sessionAttributes.expectingFollowup = false;
+    }
+
+    const wantsCreateCalendar =
+      !isListRequest &&
+      ((hasCreateVerb && (hasImplicitTime || hasDateOrTime)) ||
+        (mentionsCalendarThing && (hasCreateVerb || hasImplicitTime || hasDateOrTime)));
+
+    if (wantsCreateCalendar || (pendingCalendar && followupIsCalendar)) {
+      const dateParts = parseDateFromText(trimmed);
+      const timeParts = parseTimeFromText(trimmed);
+      const titleFromText = extractEventTitle(trimmed);
+      const merged = {
+        title: titleFromText || pendingCalendar?.title || "",
+        date: dateParts || pendingCalendar?.date || null,
+        time: timeParts || pendingCalendar?.time || null,
+      };
+      if (!merged.title) {
+        sessionAttributes.pendingCalendarCreate = merged;
+        sessionAttributes.expectingFollowup = true;
+        return {
+          speech: "Wie soll der Termin heissen?",
+          shouldEndSession: false,
+          repromptText: "Sag den Titel des Termins.",
+          elicitFollowup: true,
+        };
+      }
+      if (!merged.date || !merged.time) {
+        sessionAttributes.pendingCalendarCreate = merged;
+        sessionAttributes.expectingFollowup = true;
+        return {
+          speech: "Wann soll der Termin stattfinden? Bitte sag Datum und Uhrzeit.",
+          shouldEndSession: false,
+          repromptText: "Sag zum Beispiel: morgen um 14 Uhr.",
+          elicitFollowup: true,
+        };
+      }
+      delete sessionAttributes.pendingCalendarCreate;
+      sessionAttributes.expectingFollowup = false;
+      const access = await getGoogleAccessToken(accountUserId);
+      if (!access.ok) {
+        return {
+          speech: "Ich konnte die Google-Verknuepfung gerade nicht nutzen. Bitte versuch es gleich nochmal.",
+          shouldEndSession: false,
+          repromptText: "Sag zum Beispiel: Welche Termine habe ich?",
+          elicitFollowup: false,
+        };
+      }
+      const startDateTime = formatDateTime(merged.date, merged.time);
+      const endDateTime = formatDateTime(merged.date, {
+        hour: merged.time.hour + 1,
+        minute: merged.time.minute,
+      });
+      const created = await googleCreateCalendarEvent(access.accessToken, {
+        title: merged.title,
+        startDateTime,
+        endDateTime,
+      });
+      void logConversationEvent({
+        userId,
+        accountUserId,
+        eventType: "calendar_create_attempt",
+        payload: {
+          ok: created.ok,
+          status: created.status,
+          title: merged.title,
+          startDateTime,
+          endDateTime,
+          calendarId: "primary",
+          responseId: created.json?.id || null,
+          error: created.json?.error || null,
+        },
+      });
+      if (!created.ok) {
+        return {
+          speech: "Ich konnte den Termin gerade nicht anlegen. Bitte versuch es erneut.",
+          shouldEndSession: false,
+          repromptText: "Sag zum Beispiel: Welche Termine habe ich?",
+          elicitFollowup: false,
+        };
+      }
+      if (!created.json || !created.json.id) {
+        return {
+          speech: "Ich konnte den Termin gerade nicht bestaetigen. Bitte versuch es erneut.",
+          shouldEndSession: false,
+          repromptText: "Sag zum Beispiel: Welche Termine habe ich?",
+          elicitFollowup: false,
+        };
+      }
+      return {
+        speech: `Alles klar, ich habe den Termin "${merged.title}" eingetragen.`,
+        shouldEndSession: false,
+        repromptText: "Soll ich noch etwas in deinem Kalender tun?",
+        elicitFollowup: false,
+      };
+    }
+    const toolResult = await handleGoogleTaskUtterance(trimmed, accountUserId);
+    if (toolResult.ok && toolResult.speech) {
+      delete sessionAttributes.pendingCalendarCreate;
+      sessionAttributes.expectingFollowup = false;
+      return {
+        speech: toolResult.speech,
+        shouldEndSession: false,
+        repromptText: "Soll ich noch etwas in Google erledigen?",
+        elicitFollowup: false,
+      };
+    }
+    if (!toolResult.ok) {
+      const fallbackSpeech =
+        toolResult.error === "calendar_failed" || toolResult.error === "gmail_failed"
+          ? "Ich konnte Google gerade nicht erreichen. Bitte versuch es gleich nochmal."
+          : toolResult.error === "tasks_list_failed"
+          ? "Ich konnte deine Aufgabenlisten gerade nicht laden."
+          : "Ich kann das gerade nicht mit Google umsetzen. Sag zum Beispiel: Welche Termine habe ich?";
+      return {
+        speech: fallbackSpeech,
+        shouldEndSession: false,
+        repromptText: "Sag zum Beispiel: Welche Termine habe ich?",
+        elicitFollowup: false,
+      };
+    }
   }
   let improverDecision = null;
   if (
@@ -6433,7 +7454,7 @@ const handleChatUtterance = async ({
           maxTokens: Math.min(120, responseLimits.maxTokens || 120),
           useAutoSelector: false,
           fallbackModel: null,
-          timeoutMs: Math.min(1500, config.straicoInteractiveTimeoutMs),
+          timeoutMs: getInteractiveTimeout(),
           requestId: requestMeta?.requestId || "",
         });
         if (retry.ok) {
@@ -6486,7 +7507,7 @@ const handleChatUtterance = async ({
         maxTokens: responseLimits.maxTokens,
         useAutoSelector: false,
         fallbackModel: null,
-        timeoutMs: Math.min(2000, config.straicoInteractiveTimeoutMs),
+        timeoutMs: getInteractiveTimeout(),
         requestId: requestMeta?.requestId || "",
       });
       if (followupRetry.ok) {
@@ -6510,7 +7531,7 @@ const handleChatUtterance = async ({
           maxTokens: responseLimits.maxTokens,
           useAutoSelector: false,
           fallbackModel: null,
-          timeoutMs: Math.min(2600, config.straicoInteractiveTimeoutMs),
+          timeoutMs: getInteractiveTimeout(),
           requestId: requestMeta?.requestId || "",
         });
         if (retry.ok) {
@@ -6655,9 +7676,9 @@ const handleChatUtterance = async ({
       sessionAttributes.expectingFollowup = true;
       repromptText = forceYesNoReprompt
         ? "Sag: ja oder nein."
-        : "Sag bitte kurz, was du brauchst – nutze gerne meinen Namen Klara am Anfang.";
+        : "Sag bitte kurz, was du brauchst.";
     } else {
-      repromptText = "Sag gern noch etwas – nutze gern Klara am Anfang.";
+      repromptText = "Sag gern noch etwas.";
     }
     if (forceYesNoReprompt) {
       sessionAttributes.awaitingLiveFallbackConfirm = true;
@@ -6779,6 +7800,19 @@ const handleAlexaConversations = async ({
   const args = body?.request?.apiRequest?.arguments || {};
   const utterance = String(args.query || args.utterance || args.text || "").trim();
   const inputTranscript = String(body?.request?.inputTranscript || "").trim();
+  if (inputTranscript) {
+    sessionAttributes.lastUserUtterance = inputTranscript;
+    sessionAttributes.lastUserUtteranceTs = Date.now();
+    void logConversationEvent({
+      userId,
+      accountUserId,
+      eventType: "asr_transcript",
+      payload: {
+        intent,
+        inputTranscript,
+      },
+    });
+  }
 
   let speech = "";
   let shouldEndSession = false;
@@ -6865,6 +7899,8 @@ const handleAlexa = async (req, res) => {
     null;
   const pendingUserKey = getPendingUserKey(userId, accountUserId);
   const shortAnswerUtterance = getShortAnswerUtterance(intent);
+  const normalizedTranscript = normalizeCommand(inputTranscript);
+
 
   if (sessionAttributes.pendingResponseId || sessionAttributes.pendingResponseKey) {
     const pending = pendingUserKey ? getPendingResponse(pendingUserKey) : null;
@@ -6939,8 +7975,8 @@ const handleAlexa = async (req, res) => {
           }
           sessionAttributes.expectingFollowup = shouldElicitFollowup(pending.response);
           repromptText = sessionAttributes.expectingFollowup
-            ? "Sag bitte kurz, was du brauchst – nutze gerne meinen Namen Klara am Anfang."
-            : "Sag gern noch etwas – nutze gern Klara am Anfang.";
+            ? "Sag bitte kurz, was du brauchst."
+            : "Sag gern noch etwas.";
           clearPendingResponse(pendingUserKey);
           delete sessionAttributes.pendingResponseId;
           delete sessionAttributes.pendingResponseUntil;
@@ -6998,8 +8034,8 @@ const handleAlexa = async (req, res) => {
             }
             sessionAttributes.expectingFollowup = shouldElicitFollowup(speech);
             repromptText = sessionAttributes.expectingFollowup
-              ? "Sag bitte kurz, was du brauchst – nutze gerne meinen Namen Klara am Anfang."
-              : "Sag gern noch etwas – nutze gern Klara am Anfang.";
+              ? "Sag bitte kurz, was du brauchst."
+              : "Sag gern noch etwas.";
             clearPendingResponse(pendingUserKey);
             delete sessionAttributes.pendingResponseId;
             delete sessionAttributes.pendingResponseUntil;
@@ -7267,6 +8303,16 @@ const handleAlexa = async (req, res) => {
     intent = "CrokChatIntent";
     forcedUtterance = inputTranscript;
   }
+  if (
+    (intent === "ShortAnswerYesIntent" ||
+      intent === "ShortAnswerNoIntent" ||
+      intent === "ShortAnswerOkayIntent") &&
+    inputTranscript &&
+    inputTranscript.trim().split(/\s+/).length > 1
+  ) {
+    intent = "CrokChatIntent";
+    forcedUtterance = inputTranscript;
+  }
 
   if (intent === "AMAZON.YesIntent") {
     intent = "CrokChatIntent";
@@ -7302,6 +8348,9 @@ const handleAlexa = async (req, res) => {
       userAccessToken,
       userApiKey,
     });
+  }
+  if (body?.request?.type === "SessionEndedRequest") {
+    return sendResponse(res, { speech: "", shouldEndSession: true, repromptText: "", sessionAttributes });
   }
 
   if (intent === "GetCrokStatusIntent") {
@@ -7382,15 +8431,42 @@ const handleAlexa = async (req, res) => {
       payload: { reason: intent },
     });
   } else if (intent === "AMAZON.FallbackIntent") {
-    speech =
-      "Ich hab dich nicht verstanden. Bitte fange den Satz mit Klara oder bitte an.";
+    const lastUtterance = String(sessionAttributes.lastUserUtterance || "").trim();
+    const lastUtteranceTs = Number(sessionAttributes.lastUserUtteranceTs || 0);
+    const recentLast =
+      lastUtterance && lastUtteranceTs && Date.now() - lastUtteranceTs < 30_000;
+    const normalizedLast = normalizeCommand(lastUtterance);
+    const startsWithName =
+      normalizedLast.startsWith("bitte");
+    if (!inputTranscript && recentLast && startsWithName) {
+      const chat = await runChatWithTimeout({
+        utterance: lastUtterance,
+        fallbackTranscript: "",
+        sessionAttributes,
+        userId,
+        accountUserId,
+        userAccessToken,
+        userApiKey: accountUser?.apiKey || null,
+        sessionIsNew: body?.session?.new,
+        responseBudgetMs: config.alexaResponseTimeoutMs,
+        requestId: body?.request?.requestId || "",
+        intent: "CrokChatIntent",
+      });
+      return sendResponse(res, chat);
+    }
+    const fallbackNoInput = !inputTranscript;
+    speech = fallbackNoInput
+      ? "Ich habe dich nicht verstanden. Sag bitte einen ganzen Satz, zum Beispiel: Wie ist das Wetter in Berlin?"
+      : "Ich hab dich nicht verstanden. Bitte formuliere deine Frage als Satz.";
     shouldEndSession = false;
-    repromptText = "Bitte antworte im Satz oder beginne mit bitte.";
+    repromptText = fallbackNoInput
+      ? "Sag bitte einen ganzen Satz."
+      : "Sag bitte kurz, was du brauchst.";
     void logConversationEvent({
       userId,
       accountUserId,
       eventType: "fallback_intent",
-      payload: { intent },
+      payload: { intent, inputTranscript, lastUtterance: lastUtterance || null },
     });
   } else if (body?.request?.type === "LaunchRequest") {
     if (sessionAttributes.restoredFromRecent) {
@@ -7483,6 +8559,10 @@ const server = http.createServer(async (req, res) => {
 
     if (url.pathname === "/oauth/token") {
       return handleToken(req, res);
+    }
+
+    if (url.pathname === "/oauth/google/callback") {
+      return handleGoogleCallback(req, res, url);
     }
 
     if (url.pathname === "/" && req.method === "GET") {
@@ -7697,6 +8777,12 @@ const server = http.createServer(async (req, res) => {
         revokeUserTokens(userId);
         return sendHtml(res, 200, renderUserDashboard(userId, "Verknuepfung wurde getrennt."));
       }
+      if (req.method === "POST" && url.pathname === "/account/google/connect") {
+        return handleGoogleConnect(req, res, userId);
+      }
+      if (req.method === "POST" && url.pathname === "/account/google/unlink") {
+        return handleGoogleUnlink(req, res, userId);
+      }
       if (req.method === "POST" && url.pathname === "/account/location") {
         const { parsed: body } = await parseBody(req, "form");
         const preferredLocation = String(body?.preferredLocation || "").trim();
@@ -7845,6 +8931,12 @@ const server = http.createServer(async (req, res) => {
         }
         if (!updates.QA_USER_PASSWORD) {
           delete updates.QA_USER_PASSWORD;
+        }
+        if (!updates.GOOGLE_CLIENT_SECRET) {
+          delete updates.GOOGLE_CLIENT_SECRET;
+        }
+        if (!updates.GOOGLE_TOKEN_SECRET) {
+          delete updates.GOOGLE_TOKEN_SECRET;
         }
         updateEnvFile(updates);
         res.writeHead(302, { Location: "/admin" });

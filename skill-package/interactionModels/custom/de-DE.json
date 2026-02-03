@@ -13,9 +13,7 @@
             "meine antwort ist {Any}",
             "ich sage {Any}",
             "ich meine {Any}",
-            "das ist {Any}",
-            "klara {Any}",
-            "klara, {Any}"
+            "das ist {Any}"
           ]
         },
         {
@@ -30,13 +28,11 @@
                     "erzaehl mir {Query}",
                     "erzaehl {Query}",
                     "erzaehle mir {Query}",
-                    "erzaehle {Query}",
-                    "erzähle mir {Query}",
-                    "erzähle {Query}",
-                    "erzähl mir {Query}",
-                    "erzähl {Query}",
-            "klara {Query}",
-            "klara, {Query}",
+            "erzaehle {Query}",
+            "erzähle mir {Query}",
+            "erzähle {Query}",
+            "erzähl mir {Query}",
+            "erzähl {Query}",
             "hilf mir mit {Query}",
             "ich habe eine frage {Query}"
           ]
@@ -47,7 +43,6 @@
             "ja",
             "jep",
             "jo",
-            "klar",
             "genau",
             "stimmt",
             "korrekt",
