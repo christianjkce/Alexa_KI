@@ -5,6 +5,7 @@
 .sudo_as_admin_successful
 .gnupg/
 .github_token
+github.txt
 .env
 .env.*
 !.env.example
