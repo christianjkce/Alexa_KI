@@ -21,7 +21,7 @@ if command -v rg >/dev/null 2>&1; then
     -e 'sk-[A-Za-z0-9]{20,}' \
     -e 'xox[baprs]-[A-Za-z0-9-]{10,}' \
     -e 'ghp_[A-Za-z0-9]{36,}' \
-    -e 'github_pat_[A-Za-z0-9_]{20,}' \
+    -e '<token-pattern>' \
     -e '-----BEGIN (RSA|EC|OPENSSH) PRIVATE KEY-----' \
     -e 'api[_-]?key\"?\s*[:=]\s*\"?[A-Za-z0-9_\-]{16,}' \
     -e 'secret\"?\s*[:=]\s*\"?[A-Za-z0-9_\-]{12,}' \
@@ -36,7 +36,7 @@ else
     -e 'sk-[A-Za-z0-9]\{20,\}' \
     -e 'xox[baprs]-[A-Za-z0-9-]\{10,\}' \
     -e 'ghp_[A-Za-z0-9]\{36,\}' \
-    -e 'github_pat_[A-Za-z0-9_]\{20,\}' \
+    -e '<token-pattern>' \
     -e '-----BEGIN \(RSA\|EC\|OPENSSH\) PRIVATE KEY-----' \
     -e 'api[_-]\?key\"?\s*[:=]\s*\"?[A-Za-z0-9_\-]\{16,\}' \
     -e 'secret\"?\s*[:=]\s*\"?[A-Za-z0-9_\-]\{12,\}' \
@@ -55,7 +55,7 @@ if command -v rg >/dev/null 2>&1; then
     -e 'sk-[A-Za-z0-9]{20,}' \
     -e 'xox[baprs]-[A-Za-z0-9-]{10,}' \
     -e 'ghp_[A-Za-z0-9]{36,}' \
-    -e 'github_pat_[A-Za-z0-9_]{20,}' \
+    -e '<token-pattern>' \
     -e '-----BEGIN (RSA|EC|OPENSSH) PRIVATE KEY-----' \
     -e 'api[_-]?key\"?\s*[:=]\s*\"?[A-Za-z0-9_\-]{16,}' \
     -e 'secret\"?\s*[:=]\s*\"?[A-Za-z0-9_\-]{12,}' \
@@ -70,7 +70,7 @@ else
     -e 'sk-[A-Za-z0-9]{20,}' \
     -e 'xox[baprs]-[A-Za-z0-9-]{10,}' \
     -e 'ghp_[A-Za-z0-9]{36,}' \
-    -e 'github_pat_[A-Za-z0-9_]{20,}' \
+    -e '<token-pattern>' \
     -e '-----BEGIN (RSA|EC|OPENSSH) PRIVATE KEY-----' \
     -e 'api[_-]?key\"?\s*[:=]\s*\"?[A-Za-z0-9_\-]{16,}' \
     -e 'secret\"?\s*[:=]\s*\"?[A-Za-z0-9_\-]{12,}' \
