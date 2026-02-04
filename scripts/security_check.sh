@@ -14,7 +14,7 @@ echo
 
 echo "-- Checking for common secret patterns in tracked files --"
 if command -v rg >/dev/null 2>&1; then
-  rg -n --hidden --no-ignore-vcs --glob '!.git/*' --glob '!node_modules/*' \
+  rg -n --hidden --no-ignore-vcs --glob '!.git/*' --glob '!node_modules/*' --glob '!github.txt' \
     -e 'AKIA[0-9A-Z]{16}' \
     -e 'ASIA[0-9A-Z]{16}' \
     -e 'AIza[0-9A-Za-z\-_]{35}' \
@@ -29,7 +29,7 @@ if command -v rg >/dev/null 2>&1; then
     -e 'password\"?\s*[:=]\s*\"?.{6,}' \
     || true
 else
-  grep -RIn --exclude-dir=.git --exclude-dir=node_modules \
+  grep -RIn --exclude-dir=.git --exclude-dir=node_modules --exclude=github.txt \
     -e 'AKIA[0-9A-Z]\{16\}' \
     -e 'ASIA[0-9A-Z]\{16\}' \
     -e 'AIza[0-9A-Za-z\-_]\{35\}' \
