@@ -65,7 +65,6 @@ ALEXA_CLIENT_ID=local-client \
 ALEXA_CLIENT_SECRET=local-secret \
 ALEXA_REDIRECT_URI=http://localhost:3000/dev-callback \
 ADMIN_DEFAULT_USER=admin \
-ADMIN_PASS=<redacted>
 DISABLE_ALEXA_SIGNATURE_VALIDATION=1 \
 node src/server.js
 ```
@@ -75,7 +74,7 @@ Auth-Code holen (liefert 302 mit `Location` inkl. `code`):
 curl -i -X POST \
   "http://localhost:3000/oauth/authorize?client_id=${ALEXA_CLIENT_ID}&redirect_uri=${ALEXA_REDIRECT_URI}&state=xyz&scope=test" \
   -H "Content-Type: application/x-www-form-urlencoded" \
-  -d "client_id=${ALEXA_CLIENT_ID}&redirect_uri=${ALEXA_REDIRECT_URI}&username=${ADMIN_DEFAULT_USER}&password=${ADMIN_PASS}"
+  -d "client_id=${ALEXA_CLIENT_ID}&redirect_uri=${ALEXA_REDIRECT_URI}&username=${ADMIN_DEFAULT_USER}&password=<admin-pass>"
 ```
 
 Code gegen Tokens tauschen:
@@ -109,7 +108,7 @@ node scripts/mock-crok.js &
 PORT=3101 CROK_API_BASE=http://localhost:3200 DISABLE_ALEXA_SIGNATURE_VALIDATION=1 \
 ALEXA_CLIENT_ID=local-client ALEXA_CLIENT_SECRET=local-secret \
 ALEXA_REDIRECT_URI=http://localhost:3000/dev-callback \
-ADMIN_DEFAULT_USER=admin ADMIN_PASS=<redacted>
+ADMIN_DEFAULT_USER=admin \
 node src/server.js
 ```
 Dann z. B. (Port 3101 beachten):

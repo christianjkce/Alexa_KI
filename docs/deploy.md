@@ -6,7 +6,7 @@
   - `ACME_EMAIL`: für Caddy/Let’s Encrypt
   - Alexa-Creds (`ALEXA_CLIENT_ID/SECRET`, `ALEXA_REDIRECT_URI`)
   - Crok-Creds (`CROK_API_BASE`, `CROK_API_KEY`, `CROK_CLIENT_ID/SECRET`, Pfade/Timeout nach Bedarf)
-  - `SESSION_SECRET`, `ADMIN_PASS` anpassen
+- `SESSION_SECRET` anpassen
   - `DISABLE_ALEXA_SIGNATURE_VALIDATION` auf `false` lassen
   - DB-Variablen für Postgres (werden von docker-compose erwartet, die App nutzt aktuell den FS-Token-Store)
 

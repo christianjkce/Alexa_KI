@@ -16,8 +16,7 @@ Ziel: Nach Reboot oder Unterbrechung den Alexa/Straico-Stack wieder aufnehmen.
   - `APP_BASE_URL=<https-url>`
   - `PORT=3000`
   - `ACME_EMAIL=<ops-email>`
-  - `ADMIN_DEFAULT_USER=admin`
-  - `ADMIN_PASS=<redacted>
+  - Admin-Zugangsdaten in `.env` setzen (nicht dokumentieren)
   - `SESSION_SECRET=<set-secret>`
   - `JWT_SECRET=<set-secret>`
   - `ALEXA_CLIENT_ID=<from-console>`
